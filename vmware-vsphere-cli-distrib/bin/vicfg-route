@@ -1,0 +1,439 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+#
+# VMware ESX Server VMkernel IP stack default route Manager
+#
+# SYNOPSIS
+#      vicfg-route
+#      vicfg-route <default_gateway>
+# 
+# DESCRIPTION
+#      vicfg-route provides an interface to manipulate VMkernel IP stack's
+#      default route entry.
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!
+             The host to use when connecting via a vCenter Server.
+      !,
+      required => 0,
+   },
+   family => {
+      alias => "f",
+      type => "=s",
+      help => qq!    Address family to work on ('v4' or 'v6').  Default to 'v4' (valid for vSphere 4.0 and later).!,
+      default => "v4",
+      required => 0,
+   },   
+   add => {
+      alias => "a",
+      type => "=s",
+      help => qq!    Add route to the VMkernel (valid for vSphere 4.0 and later),
+                     requires <network> (described below)
+                     <network> can be specified in 3 ways:
+                             * As a single argument in <IP>/<Mask> format
+                             * Or as a <IP> <Netmask> pair.
+                             * Or as 'default'!,
+
+      required => 0,
+   },
+   del => {
+      alias => "d",
+      type => "=s",
+      help => qq!    Delete route from the VMkernel (valid for vSphere 4.0 and later),
+                     requires <network> (described below)
+                     <network> can be specified in 3 ways:
+                             * As a single argument in <IP>/<Mask> format
+                             * Or as a <IP> <Netmask> pair.
+                             * Or as 'default'!,
+      required => 0,
+   },
+   list => {
+      alias => "l",
+      type => "",
+      help => qq!    List configured routes for the VMkernel!,
+      required => 0,
+   },   
+   _default_ => {
+      type => "=s",
+      argval => "gateway",
+      help => qq!
+             The default gateway to set to.
+      !,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $gw = Opts::get_option('_default_');
+my $family = Opts::get_option('family');
+my $list = Opts::get_option('list');
+my $add = Opts::get_option('add');
+my $del = Opts::get_option('del');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['configManager.networkSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+my $ns = 
+   Vim::get_view (mo_ref => $host_view->{'configManager.networkSystem'});
+
+if (defined $list) {
+   list($ns);
+} elsif (defined $add) {
+   if (!defined $gw) {
+        $gw = $ARGV[$#ARGV];
+        my $netmask = $ARGV[$#ARGV - 1];
+        Opts::assert_usage(defined $netmask, "Not able to identify netmask: invalid format.");
+        my $prefix = prefixfromnetmask($netmask);
+        $add .= "/" . $prefix;
+   }
+   # bug 384023, 424666 
+   if ($add ne "default") {
+      $add =~ m!(.*)/(\d+)!;
+      Opts::assert_usage(defined $1 && defined $2, "Not able to identify network or prefix : Invalid Format.");
+      Opts::assert_usage($gw ne $add, "Gateway must be set to add a route");
+   }
+   Opts::assert_usage($gw ne $add, "Gateway must be set to add a route");
+   modify($ns, $add, $gw, "add");
+} elsif (defined $del) {
+   if (!defined $gw) {
+        Opts::assert_usage($#ARGV >= 1, "Gateway must be set to delete a route");
+        $gw = $ARGV[$#ARGV];
+        my $netmask = $ARGV[$#ARGV - 1];
+        my $prefix = prefixfromnetmask($netmask);
+        $del .= "/" . $prefix;
+   }
+   Opts::assert_usage($gw ne $del, "Gateway must be set to delete a route");
+   modify($ns, $del, $gw, "remove");
+} elsif (defined $gw) {
+   setgw($ns, $gw);
+} else {
+   getgw($ns);
+}
+
+Util::disconnect();
+
+sub netmaskfromprefix {
+   my ($prefix) = @_;
+   if (($family eq "v6") or ($family eq "V6")) {
+        return $prefix;
+   }
+   my $bits = "";
+   my $i;
+   for ($i = 0; $i < 32; $i++) {
+        if ($i < $prefix) {
+           $bits .= "1";
+        } else {
+           $bits .= "0";
+        }
+   }
+   my $bitmask = pack "B32", $bits;
+   my ($byte1, $byte2, $byte3, $byte4) = unpack "aaaa", $bitmask;
+   $byte1 = ord $byte1;
+   $byte2 = ord $byte2;
+   $byte3 = ord $byte3;
+   $byte4 = ord $byte4;
+   return "$byte1.$byte2.$byte3.$byte4";
+}
+
+sub prefixfromnetmask {
+   my ($netmask) = @_;
+   my @bytes = split /\./, $netmask;
+   my $bits = 0;
+   foreach my $byte (@bytes) {
+      do {
+         if ($byte % 2) {
+            $bits++;
+         }
+      } while ($byte >>= 1);
+   }
+   return $bits;
+}
+
+sub modify {
+   my ($ns, $network, $gateway, $operation) = @_;
+   my $prefixLength;
+   if ($network eq "default") {
+      if ($family eq "v6" || $family eq "V6") {
+         $network = "::";
+      } else {
+         $network = "0.0.0.0";
+      }
+      $prefixLength = "0";
+   } else {
+      $network =~ m!(.*)/(\d+)!;
+      $network = $1;
+      $prefixLength = $2;
+   }
+   if (($network !~ m/\d+\.\d+\.\d+\.\d+/) && ($family ne "v6" && $family ne "V6")) {
+      VIExt::fail("Invalid IP address for family type");
+   }
+   if (($gateway !~ m/\d+\.\d+\.\d+\.\d+/) && ($family ne "v6" && $family ne "V6")) {
+      VIExt::fail("Invalid IP address for family type");
+   }
+   if ((($network eq "0.0.0.0") or ($network eq "::")) && ($operation eq "remove")) {
+        print "WARNING! Removing the default route for system!\n" .
+              "Removing the default route may result in lost network " .
+              "connectivity\nAre you sure you wish to proceed? (y/n)\n";
+        chomp(my $answer = <STDIN>);
+        if (($answer ne "y") and ($answer ne "yes")) {
+           VIExt::fail("Aborting delete");
+        }
+        setgw($ns, $network);
+        return;
+   }
+
+   my $ip_route_entry = new HostIpRouteEntry(network => $network, 
+                                             prefixLength => $prefixLength,
+                                             gateway => $gateway);
+
+   my @ip_route_ops;
+   $ip_route_ops[0] = new HostIpRouteOp(changeOperation => $operation,
+                                          route => $ip_route_entry);
+
+   my $ip_route_table_config;
+   if ($family eq "v6" || $family eq "V6") {
+      $ip_route_table_config = new HostIpRouteTableConfig(ipv6Route => \@ip_route_ops);
+   } else {
+      $ip_route_table_config = new HostIpRouteTableConfig(ipRoute => \@ip_route_ops);
+   }
+
+   eval { $ns->UpdateIpRouteTableConfig(config => $ip_route_table_config); };
+   if ($@) {
+      VIExt::fail("Unable to " . $operation . " route: " . ($@->fault_string));
+   }
+}
+
+sub list {
+   my ($ns) = @_;
+   my $newhost = 0;
+   eval {
+      if (defined($ns->networkInfo->routeTableInfo)) {
+         $newhost = 1;
+         print "VMkernel Routes:\n";
+         my $routeEntries;
+         if ($family eq 'v6' || $family eq 'V6') {
+            $routeEntries = $ns->networkInfo->routeTableInfo->ipv6Route;
+            if (!defined $routeEntries) {
+               print "Error: Ipv6 not Enabled\n";
+            } else {
+               printf "%-40s%-40s%-40s%-20s\n", "Network","Netmask", "Gateway", "Interface";
+            }
+         } else {
+            $routeEntries = $ns->networkInfo->routeTableInfo->ipRoute;
+            printf "%-20s%-20s%-20s%-20s\n", "Network","Netmask", "Gateway", "Interface";
+         }
+         foreach my $route (@$routeEntries) {
+            my $network = $route->network;
+            my $gateway = $route->gateway;
+            my $interface = $route->deviceName;
+            
+            # only ESX 4.1 and above has this information
+            if (!defined($interface)) {
+               $interface = "";
+            }
+            
+            if ($route->gateway eq "0.0.0.0" || $route->gateway eq "::") {
+               $gateway = "Local Subnet";
+            }
+            if ($route->network eq "0.0.0.0" || $route->network eq "::") {
+               $network = "default";
+            }
+            # bug 356351 - version6 tag so can not test yet on 10.17.211.40
+            if ($family eq 'v6' || $family eq 'V6') {
+               printf "%-40s%-40s%-40s%-20s\n", $network, 
+               $route->prefixLength, $gateway, $interface;
+            } else {
+               printf "%-20s%-20s%-20s%-20s\n", $network, 
+               netmaskfromprefix($route->prefixLength), $gateway, $interface;
+            }
+         }
+      }
+   };
+   if ($newhost == 0) {
+      print "This version of ESX only supports remotely " . 
+      "listing/changing the default gateway\n";
+      getgw($ns);
+   }
+}
+
+sub setgw {
+   my ($ns, $gw) = @_;
+   my $ip_route_config;
+   if ($family eq 'v4' || $family eq 'V4') {
+      $ip_route_config = new HostIpRouteConfig(defaultGateway => $gw);
+   } else {
+      if ($family eq 'v6' || $family eq 'V6') {
+         $ip_route_config = new HostIpRouteConfig(ipV6DefaultGateway => $gw);
+      } else {
+         VIExt::fail("Invalid value for --family parameter");
+      }
+   }
+      
+   eval { $ns->UpdateIpRouteConfig(config => $ip_route_config); };
+   if ($@) {
+      VIExt::fail("Unable to set default gateway: " . ($@->fault_string));
+   }
+}
+
+sub getgw {
+   my ($ns) = @_;
+   
+   if (defined($ns->ipRouteConfig)) {
+      if ($family eq 'v4' || $family eq 'V4') {
+         my $gateway = "0.0.0.0";
+         if (defined($ns->ipRouteConfig->defaultGateway)) {
+            $gateway = $ns->ipRouteConfig->defaultGateway;
+         }
+         
+         if ($gateway eq "0.0.0.0") {
+            my $routeEntries = $ns->networkInfo->routeTableInfo->ipRoute;
+            
+            foreach (@$routeEntries) {
+               if ($_->network eq "0.0.0.0") {
+                  $gateway = $_->gateway;
+               }
+            }
+         }
+         print "VMkernel IPv4 default gateway is $gateway\n";
+      } else {
+         if ($family eq 'v6' || $family eq 'V6') {
+            if (defined($ns->ipRouteConfig->ipV6DefaultGateway)) {
+               print "VMkernel IPv6 default gateway is " . $ns->ipRouteConfig->ipV6DefaultGateway . "\n";
+            } else {
+               print "VMkernel IPv6 default gateway is not set\n";
+            }
+         } else {
+            VIExt::fail("Invalid value for --family parameter");
+         }
+      }
+   } else {
+      print "No VMkernel NIC configured.\n";
+   }   
+}
+
+__END__
+
+=head1 NAME
+
+vicfg-route - get and set routing information for the VMkernel
+
+=head1 SYNOPSIS
+
+ vicfg-route [<connection_options>]
+   [--add <route> |
+    --del <route> |
+    --help |
+    --list |
+    --family [v4 | v6] |
+    --vihost <esx_host>]
+    [<gateway>]
+
+=head1 DESCRIPTION
+
+The vicfg-route command lists or sets the default IP gateway. 
+Changing the gateway might be required if you move your ESX/ESXi host to a new physical location. 
+The vicfg-route command supports a subset of the Linux route command's options.
+
+If you run vicfg-route with no options, the command displays the default gateway. 
+You can use the C<--family> option to print the default IPv4 or the default IPv6 gateway. 
+By default, the command displays the default IPv4 gateway.
+
+=head1 OPTIONS
+
+=over
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-route --help>
+for a list of all connection options.
+
+=item B<E<lt>gatewayE<gt>>
+
+The IP address or the host name of the machine that should be set as the 
+gateway for the VMkernel IP stack.
+
+=item B<--add | -a E<lt>routeE<gt>>
+
+Adds route to the VMkernel (valid for vSphere 4.0 and later).
+
+To add a route entry and make it the default, run 
+
+  vicfg-route --add <route> default
+
+=item B<--del | -d E<lt>routeE<gt>>
+
+Deletes a route entry from the VMkernel (valid for vSphere 4.0 and later).
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--list | -l>
+
+Lists configured routes for the VMkernel.
+
+=item B<--family | -f v4 | v6>
+
+Address family, either v4 for IPv4 or v6 for IPv6. Defaults to v4.
+
+=item B<--vihost | -h E<lt>esx_hostE<gt>>
+
+When you run a vCLI command with the C<--server> option pointing to a vCenter Server 
+system, use C<--vihost> to specify the ESX/ESXi host to run the command against. 
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-route --help> for a list of common options including connection options.
+
+List the VMkernel IP stack's default gateway entry:
+
+ vicfg-route <connection_options>
+
+Set the VMkernel IP stack's default gateway entry, that is, change the default gateway to a different gateway:
+
+ vicfg-route <connection_options> <new_gateway>
+
+Set the VMkernel default gateway to 192.NNN.0.1
+
+ vicfg-route <connection_options> 192.NNN.0.1
+or
+ vicfg-route <connection_options> -a default 192.NNN.0.1
+
+Delete a 192.NNN.100.0 route from the VMkernel:
+
+ vicfg-route <connection_options> -d 192.NNN.100.0/24 192.168.0.1
+
+Add a route to  2001:10:20:NNN::/64 network through 2001:10:20:NNN::1
+
+ vicfg-route <connection_options> -f V6 -a 2001:10:20:NNN::/64 2001:10:20:NNN::1
+
+Set the VMkernel default gateway to  2001:10:20:NNN::1
+
+ vicfg-route <connection_options> -f V6 -a default 2001:10:20:NNN::1
+
+Delete the 2001:10:20:NNN:: route from the VMkernel:
+
+ vicfg-route <connection_options> -f V6 -d 2001:10:20:NNN::/64 2001:10:20:NNN::1
+
+=cut

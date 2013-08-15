@@ -1,0 +1,8 @@
+
+
+Build - This will perform build operation and generate an RPM in the current working directory
+        ./package.sh build
+Clean - This will clean up any previous files download or RPMs created
+        ./package.sh clean
+Checkout - This will only check out the scripts directory from repo
+        ./package.sh checkout

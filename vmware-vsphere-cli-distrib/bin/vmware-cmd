@@ -1,0 +1,1916 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+use HTTP::Date;
+sub register;
+sub unregister;
+
+my ($username, $password);
+my $enc = "utf8";
+my $target_host;
+my $host;
+my $port = "443";
+my $protocol = "https";
+my $target_flag = 0;
+my $help_flag = 0;
+my $quiet_flag = 0;
+my $verbose_flag = 0;
+my $list_flag = 0;
+my $server_flag = 0;
+my @cmdarray = parse_cmdline();
+my $operation = "";
+
+
+# bug 506239
+$Opts::app_name = $0;
+Opts::add_options();
+parse();
+Opts::validate(\&validate);
+
+setencoding();
+Util::connect();
+ if(validatehost()) {
+         vmaction();
+  }
+Util::disconnect();
+
+sub parse {
+   $0 = "Hiding the command line arguments";
+   if ($help_flag == 1) {
+      detailed_usage();
+      exit 0;
+   }
+   Opts::parse_environment();
+   Opts::parse_config();
+   Opts::parse_stdin();
+}
+
+
+sub vmaction {
+   if ($verbose_flag == 1) {
+      my $service_content = Vim::get_service_content();
+      Util::trace(0, "API Version: " . $service_content->about->apiVersion . "\n");
+   }
+   if ($list_flag == 1) {
+      get_all_vms();
+   }
+   elsif ($server_flag == 1) {
+      $operation = $cmdarray[0];
+      my $vm_cfg_path = generate_cfg_path($cmdarray[1]);
+      # bug 380457
+      if (!defined $vm_cfg_path) {
+         return;
+      }
+
+      if ($operation eq 'unregister') {
+         my $vm_view = get_vm($vm_cfg_path);
+         if (defined $vm_view) {
+            if(unregister($vm_view)) {
+               if($quiet_flag == 0) {
+                  Util::trace(0,"unregister() = ");
+               }
+               Util::trace(0,"1");
+            }
+         }
+      }
+      elsif ($operation eq 'register') {
+         if(register($vm_cfg_path)) {
+            if($quiet_flag == 0) {
+               Util::trace(0,"register() =");
+            }
+            Util::trace(0,"1");
+         }
+      }
+      Util::trace(0, "\n");
+   }
+   else {
+      $operation = $cmdarray[1];
+      my $vm_cfg_path = generate_cfg_path($cmdarray[0]);
+      my $vm_view;
+      if (defined $vm_cfg_path) {
+         $vm_view = get_vm($vm_cfg_path);
+      }
+      if (defined $vm_view) {
+         if ($operation eq 'getstate') {
+            if($quiet_flag == 0) {
+               Util::trace(0,"getstate() = ");
+            }
+            Util::trace(0, getstate($vm_view));
+         }
+         elsif (($operation eq 'start') || ($operation eq 'stop')
+               || ($operation eq 'reset') || ($operation eq 'suspend')) {
+            my $type = $cmdarray[2];
+            if(controlvm($vm_view, $operation, $type)) {
+               if($quiet_flag == 0) {
+                  Util::trace(0,"${operation}() = ");
+               }
+               Util::trace(0,"1");
+            }
+         }
+         elsif ($operation eq 'getproductinfo') {
+            if($quiet_flag == 0) {
+               Util::trace(0,"getproductinfo(${cmdarray[2]}) = ");
+            }
+            Util::trace(0, getproductinfo());
+         }
+         elsif ($operation eq 'getuptime') {
+            if($quiet_flag == 0) {
+               Util::trace(0,"getuptime() = ");
+            }
+            Util::trace(0,getuptime($vm_view));
+         }
+         elsif ($operation eq 'answer') {
+            answer($vm_view);
+         }
+         elsif ($operation eq 'getconfigfile') {
+            if($quiet_flag == 0) {
+               Util::trace(0,"getconfigfile() = ");
+            }
+            Util::trace(0,getconfigfile($vm_view, $vm_cfg_path));
+         }
+         elsif ($operation eq 'gettoolslastactive') {
+            if($quiet_flag == 0) {
+               Util::trace(0,"gettoolslastactive() = ");
+            }
+            Util::trace(0,gettoolslastactive($vm_view));
+         }
+         elsif ($operation eq 'setguestinfo') {
+            if(setguestinfo($vm_view)) {
+               if($quiet_flag == 0) {
+                  Util::trace(0,"setguestinfo(${cmdarray[2]} ${cmdarray[3]}) = ");
+               }
+               Util::trace(0,"1");
+            }
+         }
+         elsif ($operation eq 'getguestinfo') {
+            my ($flag, $value) = getguestinfo($vm_view);
+            if($flag) {
+               if($quiet_flag == 0) {
+                  Util::trace(0,"getguestinfo(${cmdarray[2]}) = ");
+               }
+               Util::trace(0,$value);
+            }
+            else {
+               VIExt::fail("The specified property or variable is invalid or undefined.");
+            }
+         }
+         elsif ($operation eq 'hassnapshot') {
+            my $flag = hassnapshot($vm_view);
+            if($flag) {
+               if($quiet_flag == 0) {
+                  Util::trace(0,"hassnapshot () = 1");
+               }
+               else {
+                  Util::trace(0,"1");
+               }
+            }
+            # bug 276268 
+            else {
+               if($quiet_flag == 0) {
+                  Util::trace(0,"hassnapshot () = 0");
+               }
+               else {
+                  Util::trace(0," ");
+               }
+            }
+         }
+         elsif ($operation eq 'createsnapshot') {
+            my $flag = createsnapshot($vm_view);
+            if($flag) {
+                if($quiet_flag == 0) {
+                  Util::trace(0,"createsnapshot (${cmdarray[2]} ${cmdarray[3]} ".
+                                "${cmdarray[4]} ${cmdarray[5]}) = 1");
+               }
+               else {
+                  Util::trace(0,"1");
+               }
+            }
+         }
+         elsif ($operation eq 'revertsnapshot') {
+            # defect 255376
+            # bug 309463
+            my $vm_name = $vm_view->config->name;
+            my $hassnap = hassnapshot($vm_view);
+            if($hassnap) {
+               my $flag = revertsnapshot($vm_view);
+               if($flag) {
+                  if($quiet_flag == 0) {
+                     Util::trace(0,"revertsnapshot () = 1");
+                  }
+                  else {
+                     Util::trace(0,"1");
+                  }
+               }
+            }
+            else {
+               VIExt::fail("Virtual machine '$vm_name' does not have any snapshot.");
+            }
+         }
+         elsif ($operation eq 'removesnapshots') {
+            my $flag = removesnapshots($vm_view);
+            if($flag) {
+               if($quiet_flag == 0) {
+                  Util::trace(0,"removesnapshot () = 1");
+               }
+               else {
+                  Util::trace(0,"1");
+               }
+            }
+         }
+         elsif ($operation eq 'connectdevice') {
+            if(connectdevice($vm_view, 1)) {
+               if($quiet_flag == 0) {
+                  Util::trace(0,"connectdevice(${cmdarray[2]}) = ");
+               }
+               Util::trace(0,"1");
+            }
+         }
+         elsif ($operation eq 'disconnectdevice') {
+            if(connectdevice($vm_view, 0)) {
+               if($quiet_flag == 0) {
+                  Util::trace(0,"disconnectdevice(${cmdarray[2]}) = ");
+               }
+               Util::trace(0,"1");
+            }
+         }
+         Util::trace(0, "\n");
+      }
+   }
+}
+
+
+sub parse_cmdline {
+   my @cmdarray;
+   for (my $i=0; $i<=$#ARGV; $i++) {
+      if ($ARGV[$i] eq "-l") {
+         $list_flag = 1;
+      }
+      elsif ($ARGV[$i] eq "-s") {
+         $server_flag = 1;
+      }
+      elsif ($ARGV[$i] eq "-H") {
+         $host = $ARGV[$i+1];
+         Opts::set_option('server',$host );
+         $i++;
+      }
+      # bug 371536
+      elsif ($ARGV[$i] eq "-h") {
+         $target_flag = 1;
+         $target_host = $ARGV[$i+1];
+         $i++;
+      }
+      elsif ($ARGV[$i] eq "--vihost") {
+         $target_flag = 1;
+         $target_host = $ARGV[$i+1];
+         $i++;
+      }
+      elsif ($ARGV[$i] eq "-U") {
+         $username = $ARGV[$i+1];
+         Opts::set_option('username',$username);
+         $i++;
+      }
+      elsif ($ARGV[$i] eq "-P") {
+         $password = $ARGV[$i+1];
+         Opts::set_option('password',$password);
+         $i++;
+      }
+      elsif ($ARGV[$i] eq "-Q") {
+         $protocol = $ARGV[$i+1];
+         # bug 371534
+         Opts::set_option('protocol',$protocol);
+         $i++;
+      }
+      elsif ($ARGV[$i] eq "-O") {
+         $port = $ARGV[$i+1];
+         # bug 371534
+         Opts::set_option('port',$port);
+         $i++;
+      }
+      elsif ($ARGV[$i] eq "--help") {
+         $help_flag = 1;
+      }
+      elsif ($ARGV[$i] eq "-q") {
+         $quiet_flag = 1;
+      }
+      elsif ($ARGV[$i] eq "-v") {
+         $verbose_flag = 1;
+      }
+      else {
+         # bug 371534
+         my $size_argv = length($ARGV[$i]);
+         my $argv_value = $ARGV[$i+1];
+         if (substr($ARGV[$i],0,2) eq '--') {
+            # bug 490790
+            if(defined $argv_value) {
+               Opts::set_option(substr($ARGV[$i],2,$size_argv), $argv_value);
+               $i++;
+            }
+            else {
+               Opts::set_option(substr($ARGV[$i],2,$size_argv), "");
+            }
+         }
+         elsif (substr($ARGV[$i],0,1) eq '-') {
+            if(defined $argv_value) {
+               Opts::set_option(substr($ARGV[$i],2,$size_argv), $argv_value);
+               $i++;
+            }
+            else {
+               Opts::set_option(substr($ARGV[$i],2,$size_argv), "");
+            }
+         }
+         else {
+            @cmdarray = (@cmdarray,$ARGV[$i]);
+         }
+      }
+   }
+   return @cmdarray;
+}
+
+sub setencoding {
+   if ($enc eq "utf8") {
+      $enc = Opts::getencname();
+   }
+
+   if (defined($enc)) {
+      binmode(STDIN, ":encoding($enc)");
+      binmode(STDOUT, ":encoding($enc)");
+      binmode(STDERR, ":encoding($enc)");
+   }
+}
+
+
+sub generate_cfg_path {
+   my $vm_cfg_path = shift;
+   my $ds_flag = 0;
+   my $dsname = "";
+   my $hardlink = "";
+   if( (index($vm_cfg_path, "\[") != -1) && (index($vm_cfg_path, "\]") != -1) ) {
+      return $vm_cfg_path;
+   }
+   else {
+      my @patharr = split('/', $vm_cfg_path);
+      # bug 380457
+      if (index($vm_cfg_path,'/' )!=0)
+      {
+         VIExt::fail("Invalid config path $vm_cfg_path.");
+      }
+      if (($#patharr <= 4) || ($patharr[1] ne "vmfs") || ($patharr[2] ne "volumes"))
+      {
+         VIExt::fail("Invalid config path $vm_cfg_path.");
+      }
+ 
+      my $begin = Vim::get_service_content()->rootFolder;
+      my $host_views = Vim::find_entity_views(view_type => 'HostSystem',
+                                              begin_entity => $begin);
+      foreach (@$host_views) {
+         my @datastores_mor = $_->datastore;
+         foreach my $dss (@datastores_mor) {
+            foreach my $ds (@$dss) {
+               my $ds_view = Vim::get_view(mo_ref => $ds);
+               if($patharr[3] eq $ds_view->summary->name) {
+                  $ds_flag = 1;
+                  $dsname = $patharr[3];
+                  last;
+               }
+            }
+         }
+      }
+
+      if($ds_flag == 0) {
+         foreach (@$host_views) {
+            my @datastores_mor = $_->datastore;
+            foreach my $dss (@datastores_mor) {
+               foreach my $ds (@$dss) {
+                  my $ds_view = Vim::get_view(mo_ref => $ds);
+                  # bug 379405
+                  my $url = $ds_view->info->url;
+                  if (index($url,$patharr[3]) != -1) {
+                     $ds_flag = 1;
+                     $dsname = $ds_view->summary->name;
+                     last;
+                  }
+               }
+               # bug 379405
+               if ($ds_flag == 1) {last;}
+            }
+            if ($ds_flag == 1) {last;}
+         }
+      }
+      
+      if($ds_flag == 1) {
+         return ("[" . $dsname . "] " . $patharr[4] . "\/" . $patharr[5]);
+      }
+      else {
+         VIExt::fail("Invalid config path.");
+      }
+   }
+}
+
+sub gettoolslastactive {
+   my $vm_view = shift;
+   my $status = $vm_view->guestHeartbeatStatus->val;
+   if ($status eq 'gray') {
+      return 0;
+   }
+   elsif ($status eq 'green') {
+      return 1;
+   }
+   elsif ($status eq 'yellow') {
+      return 5;
+   }
+   elsif ($status eq 'red') {
+      return 100;
+   }
+}
+
+sub getconfigfile {
+   my ($vm_view, $vm_cfg_path) = @_;
+   my @path_arr;
+   my $hardlink;
+   my @datastorearray = $vm_view->datastore;
+   my @dsname = split(/\[|\]/, $vm_view->summary->config->vmPathName);
+   my @temparr = split(/\] /,$vm_cfg_path);
+   foreach my $dss (@datastorearray) {
+      foreach my $ds (@$dss) {
+         my $ds_view = Vim::get_view(mo_ref => $ds);
+         if($dsname[1] eq $ds_view->summary->name) {
+            my @url = split("/", $ds_view->info->url);
+            my $service_content = Vim::get_service_content();
+            if ($service_content->about->apiType eq 'HostAgent') {
+               $hardlink = $url[3];
+            }
+            elsif ($service_content->about->apiType eq 'VirtualCenter') {
+               if ($service_content->about->version eq '5.0.0') {
+                  my $hardlinkpos = @url;
+                  $hardlink = $url[$hardlinkpos - 1];
+               } else {
+                  my @hardlink = split(":", $url[2]);
+                  $hardlink = $hardlink[1];
+                  if (!defined($hardlink)) {
+                     # bug 459802
+                     $hardlink = $url[4];
+                  }
+               }
+            }
+
+            my $vmxpath = "/vmfs/volumes/".$hardlink . "/" . @temparr[1 .. $#temparr];
+            @path_arr = (@path_arr, $vmxpath);
+         }
+      }
+   }
+   return @path_arr;
+}
+
+sub find_device {
+   my %args = @_;
+   my $vm = $args{vm};
+   my $name = $args{controller};
+   my $tmp;
+   my $devices = $vm->config->hardware->device;
+   if ($verbose_flag == 1) {
+      Util::trace(0, "List of found devices:\n");
+   }   
+   foreach my $device (@$devices) {
+      $tmp = $device->deviceInfo->label;
+      if ($verbose_flag == 1) {
+         Util::trace(0, "$tmp" . "\n");
+      }
+      return $device if ($tmp eq $name);
+   }
+   return undef;
+}
+
+sub connectdevice {
+   my ($vm_view, $connectflag) = @_;
+   my $tempstr = "";
+   my $devicename = $cmdarray[2];
+   my $flag = 0;
+   
+   if ($connectflag == 0) {
+      $tempstr = "dis";
+   }
+   
+   my $config_spec_operation = VirtualDeviceConfigSpecOperation->new('edit');
+   my $device = find_device(vm => $vm_view,
+                                  controller => $devicename);
+
+   if($device) {
+      if ($vm_view->runtime->powerState->val ne 'poweredOn') {
+         Util::trace(0,"For ${tempstr}connecting '" . $devicename
+                     . "' , the virtual machine should be powered on.\n");
+         $flag = 0;
+      }
+      elsif ($device->connectable->connected == $connectflag) {
+         Util::trace(0,"Device '" . $devicename
+                     . "' is already ${tempstr}connected.\n");
+         $flag = 0;
+      }
+      else {
+         $device->connectable->connected($connectflag);
+         my $devspec = VirtualDeviceConfigSpec->new(operation => $config_spec_operation,
+                                                device => $device);
+         my $vmspec = VirtualMachineConfigSpec->new(deviceChange => [$devspec]);
+         eval {
+            $vm_view->ReconfigVM(spec => $vmspec);
+            $flag = 1;
+         };
+         if ($@) {
+            $flag = 0;
+            if (ref($@) eq 'SoapFault') {
+               if (ref($@->detail) eq 'TooManyDevices') {
+                  VIExt::fail("Number of virtual devices exceeds "
+                               . "the maximum for a given controller.");
+               }
+               elsif (ref($@->detail) eq 'InvalidDeviceSpec') {
+                  VIExt::fail("The device configuration is not valid.\n" . 
+                              "Following is the detailed error: \n$@");
+               }
+               elsif (ref($@->detail) eq 'FileAlreadyExists') {
+                  VIExt::fail("Operation failed because file already exists.");
+               }
+               else {
+                  VIExt::fail($@);
+               }
+            }
+            else {
+               VIExt::fail($@);
+            }
+         }
+      }
+   }
+   else {
+      VIExt::fail("Device '". $devicename ."' not found.");
+   }
+   return $flag;
+}
+
+sub setguestinfo {
+   my $vm_view = shift;
+   my $varname = $cmdarray[2];
+   my $varvalue = $cmdarray[3];
+   my $flag = 0;
+   my $spec = VirtualMachineConfigSpec->new(extraConfig
+         => [ OptionValue->new(key => "$varname", value => "$varvalue") ]);
+   eval {
+      $vm_view->ReconfigVM(spec => $spec);
+      $flag = 1;
+   };
+   if ($@) {
+      $flag = 0;
+      if (ref($@) eq 'SoapFault') {
+         if (ref($@->detail) eq 'TooManyDevices') {
+            VIExt::fail("Number of virtual devices exceeds "
+                         . "the maximum for a given controller.");
+         }
+         elsif (ref($@->detail) eq 'InvalidDeviceSpec') {
+            VIExt::fail("The device configuration is not valid.\n" . 
+                        "Following is the detailed error: \n$@");
+         }
+         elsif (ref($@->detail) eq 'FileAlreadyExists') {
+            VIExt::fail("Operation failed because file already exists.");
+         }
+         else {
+            VIExt::fail($@);
+         }
+      }
+      else {
+         VIExt::fail($@);
+      }
+   }
+   return $flag;
+}
+
+sub getguestinfo {
+   my $vm_view = shift;
+   my $varname = $cmdarray[2];
+   my ($flag, $value) = (0, "");
+   if ($varname eq 'ip') {
+      if (defined $vm_view->guest) {
+         $flag = 1;
+         $value = $vm_view->guest->ipAddress;
+      }
+   } else {
+      if ((defined $vm_view->config) && (defined $vm_view->config->extraConfig)) {
+         my $extraConfig = $vm_view->config->extraConfig;
+         foreach (@$extraConfig) {
+            if($_->key eq $varname) {
+               $flag = 1;
+               $value = $_->value;
+            }
+         }
+      }
+   }
+   return ($flag, $value);
+}
+
+sub hassnapshot {
+   my $vm_view = shift;
+   my $flag = 0;
+   my $snapshots = $vm_view->snapshot;
+   if(defined $snapshots) {
+      $flag = 1;
+   }
+   return $flag;
+}
+
+sub revertsnapshot {
+   my $vm_view = shift;
+   my $flag = 0;
+   eval {
+      $vm_view->RevertToCurrentSnapshot();
+      $flag = 1;
+   };
+   if ($@) {
+      $flag = 0;
+      if (ref($@) eq 'SoapFault') {
+         if(ref($@->detail) eq 'InvalidState') {
+            VIExt::fail("Operation cannot be performed in the current state ".
+                          "of the virtual machine.");
+         }
+         elsif(ref($@->detail) eq 'NotSupported') {
+            VIExt::fail("Host product does not support snapshots.");
+         }
+         elsif(ref($@->detail) eq 'InvalidPowerState') {
+            VIExt::fail("Operation cannot be performed in the current power state ".
+                          "of the virtual machine.");
+         }
+         elsif(ref($@->detail) eq 'InsufficientResourcesFault') {
+            VIExt::fail("Operation would violate a resource usage policy.");
+         }
+         elsif(ref($@->detail) eq 'HostNotConnected') {
+            VIExt::fail("Host not connected.");
+         }
+         elsif(ref($@->detail) eq 'NotFound') {
+            VIExt::fail("Virtual machine does not have a current snapshot.");
+         }
+         else {
+            VIExt::fail("Fault: " . $@);
+         }
+      }
+      else {
+         VIExt::fail("Fault: " . $@);
+      }
+   }
+   return $flag;
+}
+
+sub removesnapshots {
+   my $vm_view = shift;
+   my $flag = 0;
+   # bug 309463
+   my $vm_name = $vm_view->config->name;
+   eval {
+      my $check_snapshot = hassnapshot($vm_view);
+      if($check_snapshot) {
+         $vm_view->RemoveAllSnapshots();
+         $flag = 1;
+      }
+      else {
+         VIExt::fail("Virtual machine '$vm_name' does not have any snapshot.");
+      }
+   };
+   if ($@) {
+      $flag = 0;
+      if (ref($@) eq 'SoapFault') {
+         if(ref($@->detail) eq 'InvalidState') {
+            VIExt::fail("Operation cannot be performed in the current state ".
+                          "of the virtual machine.");
+         }
+         elsif(ref($@->detail) eq 'NotSupported') {
+            VIExt::fail("Host product does not support snapshots.");
+         }
+         elsif(ref($@->detail) eq 'InvalidPowerState') {
+            VIExt::fail("Operation cannot be performed in the current ".
+                          "power state of the virtual machine.");
+         }
+         elsif(ref($@->detail) eq 'HostNotConnected') {
+            VIExt::fail("Host not connected.");
+         }
+         else {
+            VIExt::fail("Fault: " . $@);
+         }
+      }
+      else {
+         VIExt::fail("Fault: " . $@);
+      }
+   }
+   return $flag;
+}
+
+sub createsnapshot {
+   my $vm_view = shift;
+   my $snapshotname = $cmdarray[2];
+   my $description = $cmdarray[3];
+   my $quiesce = $cmdarray[4];
+   my $memory = $cmdarray[5];
+   my $flag = 0;
+   # bug 309473
+   if (!defined($description) || !defined($quiesce) || !defined($memory)) {
+       VIExt::fail("For creating a snapshot you must specify <name> ".
+                   "<description> <quiesce - can be 0/1> ".	
+                   "<memory - can be 0/1>.");	
+   }
+   else {
+       if (($quiesce ne '1') && ($quiesce ne '0')) {
+          VIExt::fail("Error: quiesce value should be 0/1.");
+       }
+       if (($memory ne '1') && ($memory ne '0')) {
+          VIExt::fail("Error: memory value should be 0/1.");
+       }
+      eval {
+        $vm_view->CreateSnapshot(name => $snapshotname,
+                           description => $description,
+                           memory => $memory,
+                           quiesce => $quiesce);
+        $flag = 1;
+      };
+      if ($@) {
+        $flag = 0;
+        if (ref($@) eq 'SoapFault') {
+          if(ref($@->detail) eq 'InvalidName') {
+            VIExt::fail("Snapshot name is invalid.");
+          }
+          elsif(ref($@->detail) eq 'InvalidState') {
+            VIExt::fail("Operation cannot be performed in the current state ".
+                       "of the virtual machine.");
+          }
+          elsif(ref($@->detail) eq 'NotSupported') {
+            VIExt::fail("Host product does not support snapshots.");
+          }
+          elsif(ref($@->detail) eq 'InvalidPowerState') {
+            VIExt::fail("Operation cannot be performed in the current power state "
+                       ."of the virtual machine.");
+          }
+          elsif(ref($@->detail) eq 'InsufficientResourcesFault') {
+            VIExt::fail("Operation would violate a resource usage policy.");
+          }
+          elsif(ref($@->detail) eq 'HostNotConnected') {
+            VIExt::fail("Host not connected.");
+          }
+          elsif(ref($@->detail) eq 'NotFound') {
+            VIExt::fail("Virtual machine does not have a current snapshot.");
+          }
+          else {
+            VIExt::fail("Fault: " . $@);
+          }
+        }
+        else {
+           VIExt::fail("Fault: " . $@);
+        }
+      }
+   }
+   return $flag;
+}
+
+sub getstate {
+   my $vm_view = shift;
+   # bug 377858
+   if (defined $vm_view->runtime->question) {
+      return "stuck";
+   }
+   elsif ($vm_view->runtime->powerState->val eq "poweredOff") {
+      return "off";
+   }
+   elsif ($vm_view->runtime->powerState->val eq "poweredOn") {
+      return "on";
+   }
+   elsif ($vm_view->runtime->powerState->val eq "suspended") {
+      return "suspended";
+   }
+   elsif (defined $vm_view->runtime->question) {
+      return "stuck";
+   }
+   else {
+      return "unknown";
+   }
+}
+
+
+
+
+sub reconfigvm {
+   my ($vm_view,  $virtualMachineDefaultPowerOpInfo) = @_;
+   eval {
+      my $vmspec = VirtualMachineConfigSpec->new(
+                      powerOpInfo => $virtualMachineDefaultPowerOpInfo);
+      $vm_view->ReconfigVM(spec => $vmspec);
+   };
+   if ($@) {
+      if (ref($@) eq 'SoapFault') {
+         if (ref($@->detail) eq 'TooManyDevices') {
+            VIExt::fail("Number of virtual devices exceeds "
+                         . "the maximum for a given controller.");
+         }
+         elsif (ref($@->detail) eq 'InvalidDeviceSpec') {
+            VIExt::fail("The device configuration is not valid.\n" . 
+                        "Following is the detailed error: \n$@");         
+         }
+         elsif (ref($@->detail) eq 'FileAlreadyExists') {
+            VIExt::fail("Operation failed because file already exists.");
+         }
+         else {
+            VIExt::fail($@);
+         }
+      }
+      else {
+         VIExt::fail($@);
+      }
+   }
+}
+
+
+sub controlvm {
+   my ($vm_view, $operation, $type) = @_;
+   my $flag = 0;
+   eval {
+         if ($operation eq 'start') {
+            $vm_view->PowerOnVM();
+         }
+         elsif ($operation eq 'stop') {
+            if ($type eq 'hard') {
+               $vm_view->PowerOffVM();
+            } elsif ($type eq 'soft') {
+               $vm_view->ShutdownGuest();
+            }            
+         }
+         elsif ($operation eq 'reset') {
+            if ($type eq 'hard') {
+               $vm_view->ResetVM();
+            } elsif ($type eq 'soft') {
+               $vm_view->RebootGuest();
+            }
+         }
+         elsif ($operation eq 'suspend') {
+            if ($type eq 'hard') {
+               $vm_view->SuspendVM();
+            } elsif ($type eq 'soft') {
+               $vm_view->StandbyGuest();
+            }            
+         }
+         $flag = 1;
+   };
+   if ($@) {
+      $flag = 0;
+      if (ref($@) eq 'SoapFault') {
+         if (ref($@->detail) eq 'NotSupported') {
+            VIExt::fail("Virtual machine is marked as a template.");
+         }
+         elsif (ref($@->detail) eq 'InvalidPowerState') {
+            VIExt::fail("The attempted operation".
+                       " cannot be performed in the current state." );
+         }
+         elsif (ref($@->detail) eq 'InvalidState') {
+            VIExt::fail("Current State of the "
+                   ." virtual machine is not supported for this operation.");
+         }
+         else {
+            VIExt::fail("Operation cannot be performed: " . $@);
+         }
+      }
+      else {
+            VIExt::fail("Operation cannot be performed: " . $@);
+      }
+   }
+   return $flag;
+}
+
+sub getproductinfo {
+   my $prodinfo = $cmdarray[2];
+   my $service_content = Vim::get_service_content();
+   eval {
+      if ($prodinfo eq 'product') {
+         return ($service_content->about->productLineId);
+      }
+      elsif ($prodinfo eq 'platform') {
+         return ($service_content->about->osType);
+      }
+      elsif ($prodinfo eq 'build') {
+         return ($service_content->about->build);
+      }
+      elsif ($prodinfo eq 'majorversion') {
+         return (getversion($service_content->about->version, 'major'));
+      }
+      elsif ($prodinfo eq 'minorversion') {
+         return (getversion($service_content->about->version, 'minor'));
+      }
+   }
+}
+
+sub getversion {
+   my ($version, $type) = @_;
+   my @arrversion = split(/\./, $version);
+   if ($type eq 'major') {
+      return ($arrversion[0]);
+   }
+   elsif ($type eq 'minor') {
+      return ($arrversion[1]);
+   }
+}
+
+
+sub getuptime {
+   my $vm_view = shift;
+   my $returnvalue = -1;
+   if ($vm_view->runtime->powerState->val eq 'poweredOn') {
+      my $si_moref = ManagedObjectReference->new(type => 'ServiceInstance',
+                                                 value => 'ServiceInstance');
+      my $si_view = Vim::get_view(mo_ref => $si_moref);
+      my @date1 = split(/\./, str2time($si_view->CurrentTime()));
+      my @date2="";
+      if (defined $vm_view->runtime->bootTime) {
+         @date2 = split(/\./, str2time($vm_view->runtime->bootTime));
+         $returnvalue = (to_decimal($date1[0])-to_decimal($date2[0]));
+      }
+   }
+   return $returnvalue;
+}
+
+
+sub answer {
+   my $vm_view = shift;
+   my $selectflag = 0;
+   my $selected = "";
+   if (defined $vm_view->runtime->question) {
+      Util::trace(0,"\nQuestion (id = ".$vm_view->runtime->question->id .") : "
+            . $vm_view->runtime->question->text);
+      my $choice = $vm_view->runtime->question->choice->choiceInfo;
+      foreach(@$choice) {
+         Util::trace(0,"\n\t " . $_->key . ")");
+         Util::trace(0," " . $_->label);
+      }
+      Util::trace(0,"\n\nSelect choice. Press enter for default <"
+          . $vm_view->runtime->question->choice->defaultIndex . "> : ");
+      chomp($selected = <STDIN>);
+      if($selected eq "") {
+         $selected = $vm_view->runtime->question->choice->defaultIndex;
+      }
+
+      Util::trace(0,"\nselected " . $selected . ": ");
+      foreach(@$choice) {
+         if($selected eq $_->key) {
+            Util::trace(0,$_->label);
+            $selectflag = 1;
+         }
+      }
+      if ($selectflag == 0) {
+         Util::trace(0,"Invalid choice.");
+         return;
+      }
+      elsif ($selectflag ==1) {
+         eval {
+            $vm_view->AnswerVM(questionId => $vm_view->runtime->question->id,
+                               answerChoice => $selected);
+         };
+      if ($@) {
+            if (ref($@) eq 'SoapFault') {
+               if (ref($@->detail) eq 'ConcurrentAccess') {
+                  VIExt::fail("The question has been or is being"
+                              . " answered by another thread or user.");
+                  }
+               elsif (ref($@->detail) eq 'InvalidArgument') {
+                  VIExt::fail("Question id does not apply to this "
+                              . "virtual machine.");
+                  }
+               else {
+                  VIExt::fail("Fault: " . $@);
+               }
+            }
+            else {
+               VIExt::fail("Fault: " . $@);
+            }
+         }
+      }
+   }
+   else {
+      Util::trace(0,"No questions pending.");
+   }
+}
+
+
+sub to_decimal ($;$) {
+    return unless defined $_[0] && $_[0] ne '';
+    my ($num) = $_[0] =~ /([+-]?(?:\d+(?:\.\d*)?|\.\d+))/;
+    return unless defined $num;
+    $_[1] ||= 5;
+    sprintf "%.$_[1]f", $num;
+}
+
+
+
+sub unregister {
+   my $vm_view = shift;
+   my $flag = 0;
+   eval {
+      $vm_view->UnregisterVM();
+      $flag = 1;
+   };
+   if ($@) {
+      $flag = 0;
+      if (ref($@) eq 'SoapFault') {
+         if (ref($@->detail) eq 'InvalidPowerState') {
+            VIExt::fail("VM must be powered off"
+                         ." for this operation.");
+         }
+         elsif (ref($@->detail) eq 'HostNotConnected') {
+            VIExt::fail("Unable to communicate with the remote host,"
+                         . " since it is disconnected.");
+         }
+         else {
+            VIExt::fail("Fault: " . $@);
+         }
+      }
+      else {
+         VIExt::fail("Fault: " . $@);
+      }
+   }
+   return $flag;
+}
+
+
+# bug 276262
+sub prompt_resource_pool {
+   my $msg = shift;
+   print "$msg ";
+   my $input = scalar(<STDIN>);
+   chop($input);
+   my $pool_name = $input;
+   return $pool_name;
+}
+
+sub register {
+   my $vmxpath = shift;
+   my $flag = 0;
+   my $hostView;
+   my $pool_view;
+   my $begin;
+   # bug 276262
+   my $datacenter ;
+   my $pool ;
+   my $service_content = Vim::get_service_content();
+   my $api_type = $service_content->about->apiType;
+   if($api_type eq "VirtualCenter"){
+       $datacenter = ${cmdarray[2]};
+       $pool = ${cmdarray[3]};
+   }
+   elsif($api_type eq "HostAgent") {
+       $pool = ${cmdarray[2]};
+       if(!defined  $pool) {
+          my $rp_view = Vim::find_entity_view(view_type => 'ResourcePool',
+                                                 filter => {"name" => 'Resources'});
+          if(defined $rp_view) {
+             $pool = $rp_view->name; 
+          }
+          else {
+             $pool = prompt_resource_pool("Please enter the resource pool:")
+          }
+       }
+   }
+
+   if ( ($target_flag == 1) && (!defined $datacenter)) {
+      VIExt::fail("Must specify datacenter if host is a virtual center.");
+   }
+   
+   if (!defined $pool) {
+      VIExt::fail("Must specify resource pool.");
+      return;
+   }
+   
+   if ( ($target_flag == 1) && (defined $datacenter)) {
+       $begin = Vim::find_entity_view (view_type => 'Datacenter',
+                                       filter => {name => "$datacenter"});
+      if (!$begin) {
+         VIExt::fail("No data center found with name: $datacenter.");
+      }
+   }
+   else {
+      $begin = Vim::get_service_content()->rootFolder;
+   }
+   
+   $pool_view = Vim::find_entity_view (view_type => 'ResourcePool',
+                                       filter => {name => "$pool"});
+   if (!$pool_view) {
+      VIExt::fail("No resource pool found with name: $pool.");
+   }
+   
+   my $folder_views = Vim::find_entity_views(view_type => 'Folder',
+                                           begin_entity => $begin);
+   my $folder_view = undef;
+   foreach (@$folder_views) {
+      my $arr = $_->childType;
+      my $view = $_;
+      my $count = 0;
+      foreach (@$arr) {
+         my $type = $arr->[$count];    
+         $count = $count + 1;
+         if($type eq 'VirtualMachine') {
+            $folder_view = $view;
+            last;
+         }
+      }
+      if(defined $folder_view) {
+         last;
+      }
+   }
+   if (!defined $folder_view) {
+      VIExt::fail("No folder found.");
+   }
+
+   eval {
+      if ($target_flag == 0) {
+         $folder_view->RegisterVM(path => $vmxpath,
+                                  asTemplate => 'false',
+                                  pool => $pool_view);
+         $flag = 1;
+      }
+      elsif ($target_flag == 1) {
+         my $host_view =
+            Vim::find_entity_view(view_type => 'HostSystem',
+                                  filter => { 'name' => $target_host});
+         if (!$host_view) {
+            VIExt::fail("No host '" . $target_host . "' found.");
+         }
+         $folder_view->RegisterVM(path => $vmxpath,
+                                  asTemplate => 'false',
+                                  pool => $pool_view,
+                                  host => $host_view);
+         $flag = 1;
+      }
+   };
+   if ($@) {
+      $flag = 0;
+      if (ref($@) eq 'SoapFault') {
+      Util::trace(0,"\nFault: " . $@ . "\n");
+         if (ref($@->detail) eq 'AlreadyExists') {
+            VIExt::fail("The specified key, name, or identifier already exists.");
+         }
+         elsif (ref($@->detail) eq 'OutOfBounds') {
+            VIExt::fail("Maximum number of virtual machines has been exceeded.");
+         }
+         elsif (ref($@->detail) eq 'InvalidArgument') {
+            VIExt::fail("A specified parameter was not correct.");
+         }
+         elsif (ref($@->detail) eq 'DatacenterMismatch') {
+            VIExt::fail("Datacenter mismatch: The input arguments had entities "
+                         . "that did not belong to the same datacenter.");
+         }
+         elsif (ref($@->detail) eq 'InvalidDatastorePath') {
+            VIExt::fail("Invalid datastore path: $vmxpath.");
+         }
+         elsif (ref($@->detail) eq 'NotSupported') {
+            VIExt::fail("Operation is not supported.");
+         }
+         elsif (ref($@->detail) eq 'InvalidState') {
+            VIExt::fail("The operation is not allowed in the current state.");
+         }
+         else {
+            VIExt::fail("Fault: " . $@);
+         }
+      }
+      else {
+         VIExt::fail("Fault: " . $@);
+      }
+   }
+   return $flag;
+}
+
+
+sub get_vm {
+   my $vm_cfg_path = shift;
+   my $hostView;
+   my $vm_view;
+   if ($target_flag == 1) {
+      $hostView = Vim::find_entity_view (view_type => 'HostSystem',
+                                            filter => {'name' => "$target_host"});
+      if (!defined $hostView) {
+         VIExt::fail("Host not found.");
+      }  
+      $vm_view =
+         Vim::find_entity_view((view_type => 'VirtualMachine'),
+                               filter => {'summary.config.vmPathName' => $vm_cfg_path});
+      if(defined $vm_view) {
+         my $host = $vm_view->runtime->host;
+         my $vm_host_view = Vim::get_view(mo_ref=>$host);
+         if(!($vm_host_view->name eq $hostView->name)) {
+            VIExt::fail("No virtual machine found.");
+         }
+      }   
+   }
+   else {
+      $vm_view
+         = Vim::find_entity_view((view_type => 'VirtualMachine'),
+                                  filter => { 'summary.config.vmPathName' => $vm_cfg_path});
+   }
+   if (!$vm_view) {
+      VIExt::fail("No virtual machine found.");
+   }
+   return $vm_view;
+}
+
+
+sub get_all_vms {
+   my $hostView;
+   my $vm_views;
+   if ($target_flag == 1) {
+      $hostView = Vim::find_entity_view (view_type => 'HostSystem',
+                                            filter => {'name' => "$target_host"});
+      if (!defined $hostView) {
+         VIExt::fail("Host not found.");
+      }
+      my @arr;
+      $vm_views = Vim::find_entity_views((view_type => 'VirtualMachine'));      
+      foreach (@$vm_views) {
+         my $host = $_->runtime->host;
+         my $vm_host_view = Vim::get_view(mo_ref=>$host);
+         if($vm_host_view->name eq $hostView->name) {
+            push @arr, $_;
+         } 
+      }
+      $vm_views = \@arr;
+   }
+   else {
+      $vm_views = Vim::find_entity_views((view_type => 'VirtualMachine'));
+   }
+   if (!@$vm_views) {
+      VIExt::fail("No virtual machine found.");
+   }
+   Util::trace(0,"\n");
+   foreach (@$vm_views) {
+      if ($_->config) {
+         Util::trace(0, getconfigfile($_, $_->config->files->vmPathName));
+         Util::trace(0,"\n");
+      }
+   }
+}
+
+
+sub validatehost {
+   my $valid = 1;
+   my $service_content = Vim::get_service_content();
+   if (($service_content->about->apiType eq 'VirtualCenter') && ($target_flag == 0 )) {
+      VIExt::fail("Target host must be specified if host "
+                   ."is a virtual center server.");
+      $valid = 0;
+   }
+   elsif (($service_content->about->apiType eq 'HostAgent') && ($target_flag == 1 )) {
+      VIExt::fail("Target host must not be specified"
+                   ." if host is an ESX server.");
+      $valid = 0;
+   }
+   if ($valid == 0) {
+      usage();
+   }
+   return $valid;
+}
+
+
+sub validate {
+   my $arrlength = ($#cmdarray+1);
+   my $valid = 1;
+   if ($help_flag == 1) {
+      detailed_usage();
+      return 0;
+   }
+   elsif (($list_flag == 1) && ($server_flag == 1)) {
+      $valid = 0;
+   }
+   elsif (($list_flag == 1) && ($arrlength > 0)) {
+      $valid = 0;
+   }
+   elsif (($server_flag == 1) && (!($arrlength >= 2))){
+      $valid = 0;
+   }
+   elsif (($server_flag == 1) && ($arrlength >= 2)){
+      $operation = $cmdarray[0];
+      if ( ($operation ne 'register') && ($operation ne 'unregister') ) {
+         $valid = 0;
+      }
+      elsif ( ($operation eq 'unregister') && ($arrlength != 2) ) {
+         $valid = 0;
+      }
+   }
+   elsif ( ($server_flag == 0) && ($list_flag == 0) && ($arrlength < 2) ) {
+      $valid = 0;
+   }
+   elsif ( ($server_flag == 0) && ($list_flag == 0) && ($arrlength >= 2)) {
+      $operation = $cmdarray[1];
+      if ( ($operation ne 'getstate') && ($operation ne 'start')
+            && ($operation ne 'stop') && ($operation ne 'reset')
+            && ($operation ne 'suspend') && ($operation ne 'setguestinfo')
+            && ($operation ne 'getguestinfo') && ($operation ne 'getproductinfo')
+            && ($operation ne 'connectdevice') && ($operation ne 'disconnectdevice')
+            && ($operation ne 'getconfigfile') && ($operation ne 'getuptime')
+            && ($operation ne 'gettoolslastactive') && ($operation ne 'answer') 
+            && ($operation ne 'hassnapshot') && ($operation ne 'createsnapshot') 
+            && ($operation ne 'revertsnapshot') && ($operation ne 'removesnapshots')) {
+         $valid = 0;
+      }
+      # bug 309458
+      if ( (($operation eq 'getstate') || ($operation eq 'getconfigfile')
+            || ($operation eq 'getuptime') || ($operation eq 'gettoolslastactive')
+            || ($operation eq 'answer') || ($operation eq 'hassnapshot') 
+            || ($operation eq 'removesnapshots') || ($operation eq 'revertsnapshot'))
+            && ($arrlength > 2)) {
+         $valid = 0;
+      }
+      if ((($operation eq 'stop')
+            || ($operation eq 'reset') || ($operation eq 'suspend')
+            || ($operation eq 'getguestinfo') || ($operation eq 'getproductinfo')
+            || ($operation eq 'connectdevice') || ($operation eq 'disconnectdevice'))
+            && ($arrlength != 3)  ) {
+         $valid = 0;
+      }
+      elsif (($operation eq 'stop')
+            || ($operation eq 'reset') || ($operation eq 'suspend')) {
+         my $type = $cmdarray[2];
+         if ( ($type ne 'soft') && ($type ne 'hard')) {
+            $valid = 0;
+         }
+      }
+      if (($operation eq 'setguestinfo') && ($arrlength != 4)) {
+         $valid = 0;
+      }
+      if (($operation eq 'getproductinfo') && ($arrlength == 3)) {
+         my $product = $cmdarray[2];
+         if ( ($product ne 'product') && ($product ne 'platform')
+               && ($product ne 'build') && ($product ne 'majorversion')
+               && ($product ne 'minorversion')) {
+            $valid = 0;
+         }
+      }
+   }
+   if ($valid == 0) {
+      usage();
+   }
+   return $valid;
+}
+
+sub usage {
+   # bug 263178
+   print <<USAGE;
+   Usage: vmware-cmd <options> <vm-cfg-path> <vm-action> <arguments>
+          vmware-cmd -s <options> <server-action> <arguments>
+
+     Options:
+       Connection Options:
+          -H or --server <host>            specifies an ESX host or a vCenter Server
+          -h or --vihost <target host>     specifies a target host if host is a virtual center
+          -O <port>                        specifies an alternative port
+          -Q <protocol>                    specifies an alternative protocol
+          -U or --username <username>      specifies a username
+          -P or --password <password>      specifies a password
+          --sessionfile                    specifies a sessionfile path
+          --passthroughauth                specifies a login by sspi option
+          --credstore                      specifies to fetch Credential store information
+          --encoding                       specifies encoding option
+       General Options:
+          -h More detailed help.
+          -q Quiet. Minimal output
+          -v Verbose.
+
+     Server Operations:
+       vmware-cmd -l
+       vmware-cmd -s register <config_file_path> <datacenter> <resource pool>
+       vmware-cmd -s unregister <config_file_path>
+
+     VM Operations:
+       vmware-cmd <cfg> getstate
+       vmware-cmd <cfg> start <powerop_mode>
+       vmware-cmd <cfg> stop <powerop_mode>
+       vmware-cmd <cfg> reset <powerop_mode>
+       vmware-cmd <cfg> suspend <powerop_mode>
+       vmware-cmd <cfg> setguestinfo <variable> <value>
+       vmware-cmd <cfg> getguestinfo <variable>
+       vmware-cmd <cfg> getproductinfo <prodinfo>
+       vmware-cmd <cfg> connectdevice <device_name>
+       vmware-cmd <cfg> disconnectdevice <device_name>
+       vmware-cmd <cfg> getconfigfile
+       vmware-cmd <cfg> getuptime
+       vmware-cmd <cfg> answer
+       vmware-cmd <cfg> gettoolslastactive
+       vmware-cmd <cfg> hassnapshot
+       vmware-cmd <cfg> createsnapshot <name> <description> <quiesce> <memory>
+       vmware-cmd <cfg> revertsnapshot
+       vmware-cmd <cfg> removesnapshots	
+USAGE
+}
+
+
+
+sub detailed_usage {
+   # bug 263178
+   print <<USAGE;   
+   Usage: vmware-cmd <options> <vm-cfg-path> <vm-action> <arguments>
+          vmware-cmd -s <options> <server-action> <arguments>
+
+     Options:
+       Connection Options:
+          -H or --server <host>            specifies an ESX host or a vCenter Server
+          -h or --vihost <target host>     specifies a target host if host is a virtual center
+          -O <port>                        specifies an alternative port
+          -Q <protocol>                    specifies an alternative protocol
+          -U or --username <username>      specifies a username
+          -P or --password <password>      specifies a password
+          --sessionfile                    specifies a sessionfile path
+          --passthroughauth                specifies a login by sspi option
+          --credstore                      specifies to fetch Credential store information
+          --encoding                       specifies encoding option
+       General Options:
+          -h More detailed help.
+          -q Quiet. Minimal output
+          -v Verbose.
+
+     Server Operations:
+       vmware-cmd -l
+          -- lists the registered VMs
+       vmware-cmd -s register <config_file_path> <datacenter> <resource pool>
+          -- registers a VM
+       vmware-cmd -s unregister <config_file_path>
+          -- unregisters a VM
+
+
+     VM Operations:
+       vmware-cmd <cfg> getstate
+          -- gets the execution state of the VM
+       vmware-cmd <cfg> start
+          -- powers on or resumes a VM.
+       vmware-cmd <cfg> stop <powerop_mode>
+          -- stops a VM. <powerop_mode> can be soft, hard.
+       vmware-cmd <cfg> reset <powerop_mode>
+          -- resets a VM. <powerop_mode> can be soft, hard.
+       vmware-cmd <cfg> suspend <powerop_mode>
+          -- suspends a VM. <powerop_mode> can be soft, hard.
+       vmware-cmd <cfg> setguestinfo <variable> <value>
+          -- sets a guest info variable
+       vmware-cmd <cfg> getguestinfo <variable>
+          -- retrieves the value for a guest info variable
+       vmware-cmd <cfg> getproductinfo <prodinfo>
+          -- gets various product information.
+             <prodinfo> can be product, platform, build, majorversion or minorversion
+       vmware-cmd <cfg> connectdevice <device_name>
+          -- connects a virtual device to a VM
+       vmware-cmd <cfg> disconnectdevice <device_name>
+          -- disconnects a virtual device from a VM
+       vmware-cmd <cfg> getconfigfile
+          -- retrieves the path to the configuration file
+       vmware-cmd <cfg> getuptime
+          -- retrieves the uptime of the guest OS
+       vmware-cmd <cfg> answer
+          -- answers a question for a VM requesting input
+       vmware-cmd <cfg> gettoolslastactive
+          -- retrieves the VMware tools status.
+       vmware-cmd <cfg> hassnapshot
+          -- determine if VM has a snapshot
+       vmware-cmd <cfg> createsnapshot <name> <description> <quiesce> <memory>
+          -- creates a snapshot of a VM
+       vmware-cmd <cfg> revertsnapshot
+          -- revert to the last snapshot of a VM
+       vmware-cmd <cfg> removesnapshots
+          -- remove all snapshots of a VM	
+USAGE
+
+}
+
+__END__
+
+=head1 NAME
+
+vmware-cmd - perform virtual machine operations
+
+=head1 SYNOPSIS
+
+General Options
+
+  vmware-cmd [--help | -q | -v]
+
+Server Operations
+
+ vmware-cmd -s <conn_option> 
+   [-l |
+    -s register <config_file_path> [<datacenter>] [<resource_pool>] |
+    -s unregister <config_file_path> ]
+   
+
+Virtual Machine Operations
+
+ vmware-cmd <conn_option> <config_file_path>
+    [answer |
+     connectdevice <device_name> |
+     createsnapshot <name> <description> quiesce [0|1] memory [0|1] |
+     disconnectdevice <device_name> |
+     getconfigfile |
+     getguestinfo <variable> |
+     getproductinfo [product|platform|build|majorversion|minorversion] |
+     getstate |
+     gettoolslastactive |
+     getuptime |
+     hassnapshot |
+     reset [soft|hard] |
+     removesnapshots
+     revertsnapshot |
+     setguestinfo <variable> <value> |
+     start |
+     suspend [soft|hard] ]
+
+=head1 DESCRIPTION
+
+vmware-cmd provides an interface to perform operations on a virtual machine. You can
+retrieve information such as the power state, register and unregister the virtual machine, 
+set configuration variables, and manage snapshots. 
+
+=head1 OPTIONS
+
+=head2 CONNECTION OPTIONS
+
+The vmware_cmd vSphere CLI command connection options differ from those of most other vSphere CLI
+commands. 
+
+=over
+
+=item B<-H E<lt>hostE<gt>>
+
+Specifies an ESX/ESXi host or a vCenter Server system.
+
+=item B<-h | --vihost E<lt>esx_hostE<gt>>
+
+Specifies a target host if the host specified by -H <host> is a vCenter Server system.
+
+=item B<-O E<lt>portE<gt>>
+
+Specifies an alternative port. Default is 443
+
+=item B<-U E<lt>user_nameE<gt>>
+
+Name of the user who connects to the target. This user must have privileges 
+to perform the operation. 
+
+=item B<-P E<lt>passwordE<gt>>
+
+Password of the user specified by <username>. Required if a user is specified. 
+
+=item B<--config E<lt>connection_config_fileE<gt>>
+
+Location of a configuration file that specifies connection information. 
+
+=item B<--credstore E<lt>cred_storeE<gt>>
+
+Name of a credential store file.
+
+=item B<--sessionfile E<lt>session_fileE<gt>>
+
+Name of a session file that was saved earlier using the vSphere SDK for Perl 
+session/save_session.pl script. 
+
+=item B<--passthroughauth E<lt>passthroughauthE<gt>>
+
+If you specify this option, the system attempts to connect using 
+Microsoft Windows Security Support Provider Interface (SSPI). 
+
+
+=back
+
+=head2 GENERAL OPTIONS
+
+=over
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with --help has the same effect.
+
+=item B<-q>
+
+Turns on quiet mode with minimal output.
+
+=item B<-v>
+
+Turns on verbose mode.
+
+=back
+
+=head1 OPERATIONS
+
+The following operations require that you specify the path to the virtual machine configuration file. 
+Choose one of the following formats: 
+
+Datastore prefix style: C<[ds_name] E<lt>relative_pathE<gt>> 
+
+For example:
+
+  '[myStorage1] testvms/VM1/VM1.vmx' (Linux) 
+  "[myStorage1] testvms\VM1\VM1.vmx" (Windows)
+
+UUID-based path: C<folder/subfolder/file> 
+
+For example:
+
+  '/vmfs/volumes/mystorage/testvms/VM1/VM1.vmx' (Linux) 
+  "/vmfs/volumes/mystorage/testvms/VM1/VM1.vmx" (Windows)
+
+=head2 SERVER OPERATIONS
+
+=over
+
+=item B<-l>
+
+Lists all registered virtual machines.
+
+=item B<-s register <config_file_path> [E<lt>datacenterE<gt>] [E<lt>resource_poolE<gt>]
+
+Registers a virtual machine.
+
+If -H specifies a vCenter Server system, you must specify the datacenter and the resource pool 
+to register the virtual machine in. The default datacenter is ha-datacenter and the default resource 
+pool is Resources. 
+
+If -H specifies an ESX/ESXi system, you usually do not specify the resource pool and datacenter. 
+However, if two virtual machines with the same name exist in two resource pools, 
+you must specify the resource pool. 
+
+
+=item B<-s unregister>
+
+Unregisters a virtual machine.
+
+=back
+
+=head2 VIRTUAL MACHINE OPERATIONS
+
+=over
+
+=item B<E<lt>config_file_pathE<gt> answer>
+
+Prompts the user to answer a question for a virtual machine waiting for user input.
+
+=item B<connectdevice E<lt>config_file_pathE<gt> E<lt>device_nameE<gt>>
+
+Connects a virtual device to a virtual machine.
+
+=item B<E<lt>config_file_pathE<gt> createsnapshot E<lt>nameE<gt> E<lt>descriptionE<gt> quiesce 0|1 memory 0|1>
+
+Creates a snapshot of the specified virtual machine, providing a name and description for the snapshot.
+
+If the <quiesce> flag is 1 and the virtual machine is powered on when the snapshot is taken, 
+VMware Tools is used to quiesce the file system in the virtual machine. Quiescing a file system 
+is a process of bringing the on-disk data of a physical or virtual computer 
+into a state suitable for backups. This process might include such operations as 
+flushing dirty buffers from the operating system's in-memory cache to disk, or other higher-level 
+application-specific tasks.
+
+If the <memory> flag is 1, a dump of the internal state of the virtual machine 
+is included in the snapshot. Memory snapshots take longer to create.
+
+=item B<E<lt>config_file_pathE<gt>  disconnectdevice>
+
+Disconnects the specified virtual device from the virtual machine.
+
+=item B<E<lt>config_file_pathE<gt> getconfigfile>
+
+Returns a string containing the name of the virtual machine configuration file. 
+This command fails if the virtual machine is not connected.
+
+=item B<E<lt>config_file_pathE<gt> getguestinfo>
+
+Retrieves the value for a GuestInfo variable.
+The variable contains the attributes of the guest operating system 
+of a virtual machine. For example, you can run the following command to retrieve the 
+IP address of a virtual machine:
+  vmware-cmd <config_file-path> getguestinfo ip 
+You usually use this command when VMware Technical Support or a VMware Knowledge Base article instruct 
+you to do so. 
+
+=item B<E<lt>config_file_pathE<gt> getproductinfo>
+
+Returns information about the product, where <prodinfo> is product, platform, build, majorversion (product major version number), or minorversion (product minor version number). 
+If product is specified, the return value is one of the following:
+
+  esx -- VMware ESX
+  embeddedESX -- VMware ESXi
+  unknown (unknown product type)
+
+If platform is specified, the return value is one of the following: 
+
+  win32-x86 -- x86-based Windows system
+  linux-x86 -- x86-based Linux system
+  vmnix-x86 -- x86 ESX/ESXi microkernel
+
+=item B<E<lt>config_file_pathE<gt>  getstate>
+
+Retrieves the execution state of a virtual machine. 
+The state can be on, off, suspended, or unknown.
+
+=item B<E<lt>config_file_pathE<gt> gettoolslastactive>
+
+Returns an integer indicating how much time has passed, in seconds, since the last heartbeat 
+was detected from the VMware Tools service. This value is initialized to zero when the virtual machine powers on. It stays at zero until the first heartbeat is detected. After the first heartbeat, the value is always greater than zero until the virtual machine is power cycled again.
+The command can return one of the following: 
+
+=over
+
+=item *
+
+0 -- VMware Tools are not installed or not running.
+
+=item *
+
+1 -- Guest operating system is responding normally.
+
+=item *
+
+5 -- Intermittent heartbeat. There might be a problem with the guest operating system.
+
+=item *
+
+100 -- No heartbeat. Guest operating system might have stopped responding.
+
+=back
+
+=item B<E<lt>config_file_pathE<gt> getuptime>
+
+Returns the uptime (in seconds) of the guest operating system on the virtual machine.
+
+=item B<E<lt>config_file_pathE<gt> hassnapshot>
+
+Returns 1 if the virtual machine already has a snapshot. Returns 0 otherwise. 
+
+=item B<E<lt>config_file_pathE<gt> removesnapshots>
+
+Removes all snapshots belonging to the virtual machine. If no snapshot exists, does nothing. 
+
+=item B<E<lt>config_file_pathE<gt> reset [soft|hard]>
+
+Shuts down, and then reboots a virtual machine. The powerop_mode can be hard or soft. 
+Default is soft.
+
+=item B<E<lt>config_file_pathE<gt> revertsnapshot>
+
+Reverts the virtual machine to the current snapshot. If no snapshot exists, 
+does nothing and leaves the virtual machine state unchanged. 
+
+=item B<E<lt>config_file_pathE<gt> setguestinfoE<lt>variableE<gt>  E<lt>valueE<gt>>
+
+Writes a GuestInfo variable into memory. This is an advanced command. 
+You usually use this command when 
+VMware Technical Support or a VMware Knowledge Base article instruct you to do so.
+
+=item B<E<lt>config_file_pathE<gt> start>
+
+Powers on a previously powered-off virtual machine or resumes a suspended virtual machine. 
+
+=item B<E<lt>config_file_pathE<gt> stop>
+
+Shuts down and powers off a virtual machine. 
+The powerop_mode can be hard or soft. Default is soft. 
+
+=item B<E<lt>config_file_pathE<gt> suspend [soft|hard]>
+
+Suspends a virtual machine. The default powerop_mode is soft. 
+
+=back
+
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run vmware-cmd --help for a list of common options including connection options.
+
+=head2 SERVER OPERATIONS
+
+List all the registered virtual machines:
+
+ vmware-cmd <connection_options> -l
+
+Register a virtual machine:
+
+ vmware-cmd <connection_options>
+    -s register /vmfs/volumes/storage1/MyVM/MyVM.vmx
+
+
+Unregister a virtual machine:
+
+ vmware-cmd <connection_options>
+    -s unregister /vmfs/volumes/storage1/MyVM/MyVM.vmx
+
+
+=head2 VIRTUAL MACHINE OPERATIONS
+
+Get the execution state of a virtual machine:
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx getstate
+
+Power on a virtual machine with 'soft' power mode (requires VMware Tools):
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx start soft
+
+Power on a virtual machine with 'hard' power mode:
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx start hard
+
+Set a guest info variable for a virtual machine:
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx setguestinfo VarABC 102
+
+Retrieve the value for a guest info variable for a virtual machine:
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx getguestinfo VarABC
+
+Get the platform information:
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx getproductinfo platform
+
+Get the build information:
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx getproductinfo build
+
+Connect a virtual CD/DVD drive to a virtual machine:
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx connectdevice "CD/DVD Drive 2"
+
+Disconnect a virtual CD/DVD drive from a virtual machine:  
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx disconnectdevice "CD/DVD Drive 2"
+
+
+Retrieve the path to the configuration file for a virtual machine:
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx getconfigfile
+
+Retrieve the uptime of a virtual machine's guest OS:
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx getuptime
+
+Answer a question for a virtual machine requesting input:
+
+ vmware-cmd <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx answer
+
+Retrieve the VMware tools status:
+
+ vmware-cmd -U <connection_options>
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx gettoolslastactive
+
+
+=head2 DATACENTER OPERATIONS
+
+You can perform any of the datacenter operations on a  vCenter Server system
+by specifying the vCenterServer system using the C<-H> option and the ESX/ESXi host using the C<--vihost | -h> option.
+To register a virtual machine on a vCenter Server system, you have to specify the
+datacenter and resource pool name.  For example:
+
+Register a virtual machine.
+
+ vmware-cmd -U <myuser> -P <mypassword> -H VCServerABC --vihost ESXHost
+    -s register /vmfs/volumes/storage1/MyVM/MyVM.vmx DatacenterA PoolC
+
+Get the execution state of a virtual machine.
+
+ vmware-cmd -U <myuser> -P <mypassword> -H VCServerABC -h ESXHost
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx getstate
+
+Get the product information.
+
+ vmware-cmd -U <myuser> -P <mypassword> -H VCServerABC --vihost ESXHost
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx getproductinfo product
+
+Determine if the virtual machine has snapshot.
+
+ vmware-cmd -U <myuser> -P <mypassword> -H VCServerABC -h ESXHost
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx hassnapshot
+
+Create a snapshot.
+
+ vmware-cmd -U <myuser> -P <mypassword> -H VCServerABC -h ESXHost
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx createsnapshot  <name> <description>
+       <quiesce> <memory> 
+
+Revert the virtual machine to the last snapshot.
+
+ vmware-cmd -U <myuser> -P <mypassword> -H VCServerABC -h ESXHost
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx revertsnapshot
+
+Remove all the snapshots of virtual machine
+
+ vmware-cmd -U <myuser> -P <mypassword> -H VCServerABC -h ESXHost
+    /vmfs/volumes/storage1/MyVM/MyVM.vmx removesnapshots
+
+=cut
+
+

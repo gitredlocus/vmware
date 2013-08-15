@@ -1,0 +1,401 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2008 VMware, Inc. All rights reserved.
+#
+use strict;
+use warnings;
+use Getopt::Long;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   'vihost' => {
+      alias => "h",
+      type => "=s",
+      help => qq!    
+              The host to use when connecting via a vCenter Server.
+      !,
+      required => 0,
+   },
+   'list' => {
+      alias => "l",
+      type => "",
+      help => qq!
+              List all volumes which have been detected as snapshots/replicas.
+      !,
+      required => 0,
+   },
+   'persistent-mount' => {
+      alias => "M",
+      type => "",
+      help => qq!
+              Mount a snapshot/replica volume persistently, if its original \
+              copy is not online.
+      !,
+      required => 0,
+   },
+   'resignature' => {
+      alias => "r",
+      type => "",
+      help => qq!
+              Resignature a snapshot/replica volume.
+      !,
+      required => 0,
+   },
+   'umount' => {
+      alias => "u",
+      type => "",
+      help => qq!
+              Umount a snapshot/replica volume.
+      !,
+      required => 0,
+   },  
+   'refresh' => {
+      alias => "R",
+      type => "",
+      help => qq!    Refresh the storage system.
+      !,
+      required => 0,
+   },      
+   '_default_' => {
+      type => "=s",
+      argval => "vmfs_ID",
+      help => qq!    
+              VMFS UUID or label.
+      !,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $list = Opts::get_option('list');
+my $mount = Opts::get_option('mount');
+my $umount = Opts::get_option('umount');
+my $resignature = Opts::get_option('resignature');
+my $persis = Opts::get_option('persistent-mount');
+my $vmfsid = Opts::get_option('_default_');
+my $refresh = Opts::get_option('refresh');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['config.product.version', 'configManager.storageSystem', 'configManager.datastoreSystem']);
+Opts::assert_usage($host_view, "Invalid host.");
+
+check_version();
+
+my $ss = Vim::get_view (mo_ref => $host_view->{'configManager.storageSystem'});
+my $ds = Vim::get_view (mo_ref => $host_view->{'configManager.datastoreSystem'});
+
+# bug 418246
+if(defined($refresh)) {
+   eval{$ss->RefreshStorageSystem();};
+   if ($@) {
+      VIExt::fail("Unable to refresh the storage system: " 
+                  . ($@->fault_string));
+   }
+} elsif (defined $list) {
+   list();
+} elsif (defined $persis) {
+   Opts::assert_usage(defined($vmfsid), "VMFS UUID or lable is required!");
+   mount('persistent-mount');
+} elsif (defined $resignature) {
+   Opts::assert_usage(defined($vmfsid), "VMFS UUID or lable is required!");
+   mount('resignature');
+} elsif (defined $umount) {
+   Opts::assert_usage(defined($vmfsid), "VMFS UUID or lable is required!");
+   umount();
+} else {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+
+sub check_version {
+   my $host_version = $host_view->{'config.product.version'};
+   if ($host_version ne 'e.x.p' && $host_version !~ /^4./ && $host_version !~ /^5./) {
+      VIExt::fail("ESX host version is $host_version. " .
+          "This operation is supported on ESX 4.x, ESXi 4.x, ESXi 5.x or ".
+          "through VC 4.x, VC 5.x\n");
+   }
+}
+
+sub list {
+   my $uvs = $ds->QueryUnresolvedVmfsVolumes();
+   my $extents = undef;
+   if ($uvs) {
+      foreach my $uv (@$uvs) {
+         print "VMFS UUID/label: " . $uv->vmfsUuid . "/" . $uv->vmfsLabel;
+         print "\n";
+         $extents = $uv->extent;
+         my $can_mount = ($uv->resolveStatus->resolvable) ? "Yes" : "No";
+         my $can_resig = ($uv->resolveStatus->resolvable) ? "Yes" : "No";
+         my $error = "";
+         my $vmfsid = $uv->vmfsLabel;
+         if (!$uv->resolveStatus->resolvable) {          
+            if ($uv->resolveStatus->incompleteExtents) {
+               $error = "some extents missing";
+            } elsif ($uv->resolveStatus->multipleCopies) {
+               $error = "duplicate extents found";
+            } elsif (scalar(@$extents) > 1) {
+               $error = "extra extents found";
+            }
+            $can_mount = "No ($error)";
+            $can_resig = "No ($error)";
+         } elsif (isOriginalOnline($vmfsid)) {
+            $can_mount = "No (the original volume is still online)";
+         }
+
+         print "Can mount: $can_mount\n";
+         print "Can resignature: $can_resig\n";
+         foreach my $extent (@$extents) {
+            print "Extent name: " . $extent->device->diskName . ":" .
+               $extent->device->partition . "\t" . "range: " .
+               $extent->startBlock . " - " . $extent->endBlock . " (MB)\n";
+         }
+         print "\n";
+      }
+   }
+}
+
+sub mount {
+   my ($operation) = @_;
+   my $resolution = ($operation eq "resignature")? "resignature" :
+                                                   "forceMount";
+   my $outMesg = ($operation eq "resignature")? "Resignaturing volume" :
+                                                "Persistently mounting volume";
+   my $uvs = $ds->QueryUnresolvedVmfsVolumes();
+   my $found = 0;
+   if (defined $uvs) {
+      if ($resolution eq 'KeepUuid') {
+         # check whether the original is mounted
+         if (isOrignalOnline($vmfsid)) {
+            VIExt::fail("This VMFS Volume is not mountable as the " .
+                        "original volume is still mounted.");
+         }
+      }
+
+      foreach my $uv (@$uvs) {
+         if (($vmfsid eq $uv->vmfsLabel) || ($vmfsid eq $uv->vmfsUuid)) {
+            $found = $found || 1;
+            my $spec = new HostUnresolvedVmfsResolutionSpec();
+            my $extents = $uv->extent;
+            my $path = $$extents[0]->devicePath;
+            my @paths = ($path);
+            $spec->{"extentDevicePath"} = \@paths;
+            $spec->{"uuidResolution"} = $resolution;
+            my $results = undef;
+            print "$outMesg $vmfsid\n";
+            eval {
+               $results = $ss->ResolveMultipleUnresolvedVmfsVolumes(
+                                                   resolutionSpec => ($spec));
+            };
+            if ($@) {
+               VIExt::fail("$operation failed: " . ($@->fault_string));
+            }
+            if ($results) {
+               foreach my $result (@$results) {
+                  if (defined $result->fault) {
+                     VIExt::fail($result->fault->localizedMessage);
+                  }
+               }
+            }
+         }
+      }
+   }
+   if (!defined $uvs || !$found){
+      VIExt::fail("No matching volume $vmfsid found!");
+   }
+}
+
+sub umount {
+   my $fsmount = $ss->fileSystemVolumeInfo->mountInfo;
+   my $vol = undef;
+   my $mountedInfo = undef;
+   my $found = 0;
+   my $vmfs = $vmfsid;                 # user input
+   my $errumountVmfsId = undef;        # PR 607831 - Workaround
+   my $alreadyUmountVmfsId = undef;
+   my $lastFault = undef;
+   $vmfsid =~ s/\/vmfs\/volumes\///;   # remove prefix if given
+   if ($fsmount) {
+      foreach my $fsminfo (@$fsmount) {
+         $vol = $fsminfo->volume;
+         # bug 447872
+         if($vol->type eq "VMFS") {
+            if($vmfsid eq $vol->uuid || $vmfsid eq $vol->name) {
+               $found = $found || 1;
+               my $vmfsUuid = $vmfsid;
+               if ($vmfsid eq $vol->name) {
+                  $vmfsUuid = $vol->uuid; # convert to vmfsUuid
+               }
+               $mountedInfo = $vol->forceMountedInfo;
+               if (!defined $mountedInfo || !($mountedInfo->mounted)) {
+                  VIExt::fail("Can't umount normal VMFS volumes. This option " .
+                  "is only valid for snapshot/replica volumes which are " .
+                  "manually mounted.");
+               }
+               # PR 607831
+               # Workaround issue of no flag foe "volume is a snapshot" info is available
+               # Ordering of volume info may not be the same each time, and vicfg-volume
+               # may have to make 2 calls for the 2 volume info, since there is no
+               # information about which volume info entry is the snapshot.
+               if (defined $alreadyUmountVmfsId && $alreadyUmountVmfsId ne $vmfsid) {
+                  $alreadyUmountVmfsId = undef;
+               }
+               if (!defined $alreadyUmountVmfsId) {
+                  if (!defined $errumountVmfsId || $errumountVmfsId eq $vmfsid) {
+                     if (!defined $errumountVmfsId) {
+                        # PR 607831 - print message only on 1st volume umount attempt
+                        print "Umounting volume /vmfs/volumes/" . $vmfsid . "\n";
+                     }
+                     eval {
+                        $ss->UnmountForceMountedVmfsVolume(vmfsUuid => $vmfsUuid);
+                     };
+                     if ($@) {
+                        if (defined $errumountVmfsId) {
+                           VIExt::fail("umount operation failed : " . ($@->fault_string));
+                        } else {
+                           $lastFault = $@;
+                           $errumountVmfsId = $vmfsid;
+                           $alreadyUmountVmfsId = undef;
+                        }
+                     } else {
+                        print "Successfully Umounted volume /vmfs/volumes/" . $vmfsid . "\n";
+                        $errumountVmfsId = undef;
+                        $lastFault = undef;
+                        $alreadyUmountVmfsId = $vmfsid;
+                     }
+                  } else {
+                     # PR 607831 - keep failure behaviour consistent with previous
+                     VIExt::fail("umount operation failed : " . ($lastFault->fault_string));
+                  }
+               }
+            }
+         } elsif($vmfsid eq $vol->name) {
+            VIExt::fail("Error: Cannot unmount the volume of type " . $vol->type);
+         }
+      }
+      # PR 607831 - keep failure behaviour consistent with previous
+      if (defined $lastFault) {
+         VIExt::fail("umount operation failed : " . ($lastFault->fault_string));
+      }
+      if (!$found) {
+         VIExt::fail("Error: Cannot open volume: $vmfs");
+      }
+   } else {
+      VIExt::fail("Error: Could not get file system volume mount info.");
+   }
+}
+
+sub isOriginalOnline {
+   my ($vmfs) = @_;
+   my $mountInfo = $ss->fileSystemVolumeInfo->mountInfo;
+   if ($mountInfo){
+      foreach my $m (@$mountInfo) {
+         my $volume = $m->volume;
+         if ($vmfs =~ $volume->name) {
+            if (!defined ($m->mountInfo) || !defined ($m->mountInfo->mounted)) {
+               return 1;
+            }
+            if ($m->mountInfo->mounted eq '1') {
+               return 1;
+            }
+            return 0;
+         }
+      }
+   }
+   return 0;
+}
+
+__END__
+
+=head1 NAME
+
+vicfg-volume - Managing LVM snapshot or replica volumes.
+
+=head1 SYNOPSIS
+
+ vicfg-volume [<connection_options>]
+    [--help |
+     --list |
+     --persistent-mount <VMFS-UUID|label> |
+     --resignature <VMFS-UUID|label> |
+     --umount <VMFS-UUID|label> |
+     --vihost <esx_host>]
+
+
+=head1 DESCRIPTION
+
+The vicfg-volume command supports resignaturing a snapshot volume and mounting and unmounting 
+the volume. You can also make the mounted volume persistent across reboots and query a list of 
+snapshot volumes and original volumes.
+
+The I<ESX Configuration Guide> and the I<ESXi Configuration Guide> discuss volume resignaturing in detail. 
+
+=head1 OPTIONS
+
+=over
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-volume --help>
+for a list of all connection options.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--list | -l>
+
+Lists all volumes that have been detected as snapshots or replicas.
+
+=item B<--persistent-mount | -M [E<lt>VMFS-UUIDE<gt>|E<lt>labelE<gt>]>
+
+Mounts a snapshot/replica volume persistently if its original copy
+is not online.
+
+=item B<--resignature | -r [E<lt>VMFS-UUIDE<gt>|E<lt>labelE<gt>]>
+
+Resignatures a snapshot/replica volume.
+
+=item B<--umount | -u [E<lt>VMFS-UUIDE<gt>|E<lt>labelE<gt>]>
+
+Unmounts a snapshot/replica volume.
+
+=item B<--vihost | -h>
+
+When you run a vCLI command with the C<--server> option pointing to a vCenter Server
+system, use C<--vihost> to specify the ESX/ESXi host to run the command against. 
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-volume --help> for a list of common options including connection options.
+
+List all volumes that have been detected as snapshots/replicas:
+
+   vicfg-volume <conn_options> -l
+
+Mount a snapshot or replica volume persistently:
+
+   vicfg-volume <conn_options> -M my_sample_vol
+
+Resignature a snapshot or replica volume:
+
+   vicfg-volume <conn_options -r my_sample_vol
+
+Unmount a snapshot or replica volume:
+
+   vicfg-volume conn_options -u 48c826a3-12815d67-0ac6-0030485cd343
+
+=cut

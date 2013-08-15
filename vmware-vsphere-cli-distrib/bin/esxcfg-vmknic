@@ -1,0 +1,837 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+#
+# esxcfg-vmknic - VMware ESX Server VMkernel NIC configuration Tool
+#
+
+use strict;
+use warnings;
+use Getopt::Long;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!    The host to use when connecting via a vCenter Server. !,
+      required => 0,
+   },
+   'list' => {
+      alias => "l",
+      type => "",
+      help => qq!    List VMkernel NICs on the system.!,
+      required => 0,
+   },
+   'add' => {
+      alias => "a",
+      type => "",
+      help => qq!    Add a VMkernel NIC to the system. Requires ip, netmask, portgroup.!,
+      required => 0,
+   },
+   'delete' => {
+      alias => "d",
+      type => "",
+      help => qq!    Delete the VMkernel NIC on the given portgroup.!,
+      required => 0,
+   },
+   'ip' => {
+      alias => "i",
+      type => "=s",
+      help => qq!    The IP address for this VMkernel NIC where IP address can be: 
+             <X.X.X.X>      - to use static IPv4 address specified
+             DHCP           - to enable IPv4 DHCP for address
+             <X:X:X::/X>    - to use static IPv6 address (valid for vSphere 4.0 and later)
+             DHCPV6         - to enable IPv6 DHCP for address (valid for vSphere 4.0 and later)
+             AUTOCONF       - to enable IPv6 Router advertised address (valid for vSphere 4.0 and later)!,
+      required => 0,
+   },
+   'unset-ip' => {
+      alias => "U",
+      type => "=s",
+      help => qq!    The IP address for this VMkernel NIC where IP address can be (valid for vSphere 4.0 and later): 
+             <X:X:X::/X>    - to remove the specified IPv6 address
+             DHCPV6         - to disable IPv6 DHCP address
+             AUTOCONF       - to disable IPv6 Router advertised address!,
+      required => 0,
+   },   
+   'netmask' => {
+      alias => "n",
+      type => "=s",
+      help => qq!    The IP netmask for this VMkernel NIC!,
+      required => 0,
+   },
+   'enable-ipv6' => {
+      alias => "6",
+      type => "=s",
+      help => qq!    Enable (true) or disable (false) IPv6 for next boot (valid for vSphere 4.0 and later).!,
+      required => 0,
+   },
+   'portgroup' => {
+      alias => "p",
+      type => "=s",
+      help => qq!    Setting portgroup as connection point.!,
+      required => 0,
+   },   
+   'dvs-name' => {
+      alias => "s",
+      type => "=s",
+      help => qq!    Setting DVSwitch name of the connection point (valid for vSphere 4.0 and later). Requires --dvport-id parameter.!,
+      required => 0,
+   },    
+   'dvport-id' => {
+      alias => "v",
+      type => "=s",
+      help => qq!    Setting DVPort ID of the connection point (valid for vSphere 4.0 and later). Requires --dvs-name parameter.!,
+      required => 0,
+   },
+   'tso' => {
+      alias => "t",
+      type => "",
+      help => qq!    Disable TSO for the vmknic being created (valid for vSphere 4.0 only).!,
+      required => 0,
+   },
+   'mtu' => {
+      alias => "m",
+      type => "=i",
+      help => qq!    MTU for the interface being created (valid for vSphere 4.0 and later).!,
+      required => 0,
+   },
+   'enable-vmotion' => {
+      alias => "E",
+      type => "",
+      help => qq!    Enable VMotion for the VMkernel NIC on a specified portgroup.!,
+      required => 0,
+   },
+   'disable-vmotion' => {
+      alias => "u",
+      type => "",
+      help => qq!    Disable VMotion for the VMkernel NIC on a specified \
+                     portgroup.!,
+      required => 0,
+   },
+   '_default_' => {
+      type => "=s",
+      argval => "portgroup",
+      help => qq!    The name of the port group!,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $list = Opts::get_option('list');
+my $add = Opts::get_option('add');
+my $delete = Opts::get_option('delete');
+my $ip = Opts::get_option('ip');
+my $unset_ip = Opts::get_option('unset-ip');
+my $netmask = Opts::get_option('netmask');
+my $pg = Opts::get_option('portgroup');
+my $ipv6 = Opts::get_option('enable-ipv6');
+my $dvsName = Opts::get_option('dvs-name');
+my $dvportId = Opts::get_option('dvport-id');
+my $tso = Opts::get_option('tso');
+my $mtu = Opts::get_option('mtu');
+my $enable_vmotion = Opts::get_option('enable-vmotion');
+my $disable_vmotion = Opts::get_option('disable-vmotion');
+
+
+if (!defined($pg)) {
+   $pg = Opts::get_option('_default_');
+}
+
+Util::connect();
+my $host_view = VIExt::get_host_view(1, ['config.product.version', 'configManager.networkSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+unless (defined($host_view->{'config.product.version'}) && defined($host_view->{'configManager.networkSystem'})) {
+   VIExt::fail("Host configuration data is not available.");
+}
+
+my $host_version = $host_view->{'config.product.version'};
+# bug 560892
+my $version = get_major_version($host_view);
+
+my $ns =
+   Vim::get_view (mo_ref => $host_view->{'configManager.networkSystem'});
+
+if (defined $list) {
+   list($ns);
+} elsif (defined $add) {
+   # bug 312972
+   Opts::assert_usage(!defined($dvsName) || !defined($dvportId),
+      "Can not specify dvsName, dvportId parameters for --add operation.");      
+   Opts::assert_usage(defined($ip) && defined($pg),
+      "Must specify ip, portgroup parameters.");
+   add($ns, $pg, $ip, $netmask, $dvsName, $dvportId);
+   print "Added the VMkernel NIC successfully\n";
+} elsif (defined $delete) {
+   Opts::assert_usage(defined($pg) || (defined($dvsName) && defined($dvportId)), 
+      "Must specify a portgroup or dvs-name/dvport-id parameters.");
+   remove($ns, $pg, $dvsName, $dvportId);
+   print "Removed the VMkernel NIC successfully\n";
+} elsif (defined $ip) {
+   # bug 374335
+   Opts::assert_usage(defined($pg) || (defined($dvsName) && defined($dvportId)), 
+      "Must specify a portgroup or dvs-name/dvport-id parameters.");
+   modify($ns, $pg, $ip, $netmask, $dvsName, $dvportId);
+   print "Set IP address successfully\n";
+} elsif (defined $unset_ip) {
+   modify($ns, $pg, $ip, $netmask, $dvsName, $dvportId);
+   print "Unset IP address successfully\n";
+} elsif (defined $ipv6) {
+   enableIPv6($ns, $ipv6);
+} elsif (defined $enable_vmotion || defined $disable_vmotion) {
+   my $vs;
+   # bug 560892
+   if ($version ne 'e' && $version < 4) {
+      my $h_view = VIExt::get_host_view(1, ['configManager.vmotionSystem']);
+      $vs = Vim::get_view (mo_ref => $h_view->{'configManager.vmotionSystem'});
+   } else {
+      my $h_view = VIExt::get_host_view(1, ['configManager.virtualNicManager']);
+      $vs = Vim::get_view (mo_ref => $h_view->{'configManager.virtualNicManager'});
+   }
+   # bug 382320
+   Opts::assert_usage(defined($pg) || (defined($dvsName) && defined($dvportId)), 
+                              "Must specify a portgroup or dvs-name/dvport-id parameters."); 
+   if (defined $enable_vmotion) {
+      enable_or_disable(1, $ns, $pg, $vs,$dvsName,$dvportId);
+      # bug 425776
+      if (!defined $pg) {
+         print "Enable VMotion for VMkernel NIC successfully on dvs-name $dvsName and dvport-id $dvportId. \n";
+      }else{
+         print "Enable VMotion for VMkernel NIC successfully on port group $pg.\n";
+      }
+   } else {
+      enable_or_disable(0, $ns, $pg, $vs,$dvsName,$dvportId);
+      # bug 425776
+      if (!defined $pg) {
+         print "Disable VMotion for VMkernel NIC successfully on dvs-name $dvsName and dvport-id $dvportId. \n";
+      }else{
+         print "Disable VMotion for VMkernel NIC successfully on port group $pg.\n";
+      }
+   }
+} else {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+
+# bug 560892
+sub get_major_version {
+   my ($host_view) = @_;
+   my $host_version = $host_view->{'config.product.version'};
+   $host_version =~ /(['e'|\d+])./;
+   return $1;
+}
+
+sub find_vnic {
+   my ($ns, $pg, $dvsName, $dvportId) = @_;
+   if (defined($ns->networkInfo)) {
+      my $vnics = $ns->networkInfo->vnic;
+      my $vnic;
+
+      if (defined($pg)) {
+         foreach $vnic (@$vnics) {
+            if ($vnic->portgroup && $pg eq $vnic->portgroup) {
+               return $vnic;
+            }
+         }
+      } elsif (defined($dvsName)) {
+         my $sUuid = getSwitchUuid($ns, $dvsName);
+         foreach $vnic (@$vnics) {
+            if ($vnic->spec->distributedVirtualPort && ($dvportId eq $vnic->spec->distributedVirtualPort->portKey) && ($sUuid eq $vnic->spec->distributedVirtualPort->switchUuid)) {
+               return $vnic;
+            }
+         }
+      }
+   }
+   return undef;
+}
+
+sub list {
+   my ($ns) = @_;
+   
+   if (defined($ns->networkInfo)) {
+      my $vnics = $ns->networkInfo->vnic;
+      printf("%-11s%-30s%-10s%-34s%-18s%-18s%-8s%-10s%-10s\n",
+             "Interface ",  "Port Group/DVPort ", "IP Family ", "IP Address ", "Netmask ", "MAC Address       ", "MTU     ", "Type ","  VMotion ");
+      foreach my $vnic (@$vnics) {
+         if (defined($vnic->spec)) {
+            my $mtu = "";
+            my $family = "IPv4";
+            my $portName = $vnic->portgroup;
+            my $vmotion = "";
+
+            # eval to support pre-3.5 version
+            eval {
+               if (defined($vnic->spec->mtu)) {
+                  $mtu = $vnic->spec->mtu;
+               }
+            };
+
+            eval {
+               if (defined($vnic->spec->distributedVirtualPort)) {
+                  $portName = $vnic->spec->distributedVirtualPort->portKey;
+               }
+            };
+            # bug 351175, 348940 , 372616
+            my $selectedvnic = undef;
+            # bug 560892
+            if ($version ne 'e' && $version < 4) {
+               my $h_view = VIExt::get_host_view(1, ['config.vmotion.netConfig.selectedVnic']);
+               $selectedvnic = $h_view->{'config.vmotion.netConfig.selectedVnic'};
+               if (defined $selectedvnic && rindex($selectedvnic,$vnic->device) != -1) {
+                  $vmotion = '  Enabled ';
+               }else{
+                  $vmotion = '  Disabled';
+               }
+            } else {
+               $vmotion = '  Not Available';
+            }
+
+            if (defined($vnic->spec->ip->ipAddress)) {
+               if ($vnic->spec->ip->ipAddress eq "") {
+                  printf("%-11s%-30s%-10s%-34s%-18s%-18s%-8s%-10s%-10s\n", 
+                         $vnic->device,
+                         $portName,
+                         $family,
+                         "N/A",
+                         "N/A",
+                         $vnic->spec->mac,
+                         $mtu,
+                         "NONE",
+                         $vmotion
+                         ); 
+               } else {
+                  printf("%-11s%-30s%-10s%-34s%-18s%-18s%-8s%-10s%-10s\n", 
+                         $vnic->device,
+                         $portName,
+                         $family,
+                         $vnic->spec->ip->ipAddress,
+                         $vnic->spec->ip->subnetMask,
+                         $vnic->spec->mac,
+                         $mtu,
+                         $vnic->spec->ip->dhcp ? "DHCP" : "STATIC",
+                         $vmotion
+                         );
+               }
+            }
+            
+            # eval to support pre-K/L version
+            eval {
+               if (defined($vnic->spec->ip->ipV6Config)) {
+                  $family = "IPv6";
+                         
+                  my $ipV6Addresses = $vnic->spec->ip->ipV6Config->ipV6Address;
+                  foreach my $ipV6Address (@$ipV6Addresses) {
+                     my $origin = "";
+                  
+                     if (($ipV6Address->origin eq 'manual') || 
+                         ($ipV6Address->origin eq 'linklayer') || 
+                         ($ipV6Address->origin eq 'other' && ($ipV6Address->ipAddress =~ /fe80(.*)/))) {
+                        $origin = "STATIC";
+                     } elsif ($ipV6Address->origin eq 'dhcp') {
+                        $origin = "DHCP";
+                     }
+                     printf("%-11s%-30s%-10s%-34s%-18s%-18s%-8s%-10s%-10s\n", 
+                            $vnic->device,
+                            $portName,
+                            $family,
+                            $ipV6Address->ipAddress,
+                            $ipV6Address->prefixLength,
+                            $vnic->spec->mac,
+                            $mtu,
+                            $origin,
+                            $vmotion
+                            );
+                  }
+               };
+            }
+         }
+      }
+   }
+}
+
+sub add_or_modify {
+   my ($new, $ns, $pg, $ip, $netmask, $dvsName, $dvportId) = @_;
+   my $ipV6Config;
+   my $ip_config;
+   my $dhcp = is_dhcp($ip) || is_dhcp($unset_ip);
+   my $v4 = is_v4($ip) || is_v4($unset_ip);
+   my $vnic = find_vnic($ns, $pg, $dvsName, $dvportId);
+   
+   if ($vnic) {
+      $ip_config = $vnic->spec->ip;
+   } else {
+      $ip_config = new HostIpConfig(dhcp => 0,
+                                    ipV6Config => new HostIpConfigIpV6AddressConfiguration(dhcpV6Enabled => 0,
+                                                                                           autoConfigurationEnabled => 0,
+                                                                                           ipV6Address => []));
+   }
+   
+   if ($dhcp) {
+      if ($v4) {
+         $ip_config = new HostIpConfig(dhcp => 1);
+      } else {
+         $ip_config->ipV6Config(new HostIpConfigIpV6AddressConfiguration(ipV6Address => []));
+         if ($ip) {
+            $ip_config->ipV6Config->dhcpV6Enabled(1);
+         } elsif ($unset_ip) {
+            $ip_config->ipV6Config->dhcpV6Enabled(0);
+         }         
+      }
+   } else {
+      if ($v4) {
+         if ($ip) {
+            Opts::assert_usage(defined($ip) && (defined($netmask) || $dhcp), 
+                               "Netmask is required unless ip is set to 'DHCP'.");
+            $ip_config = new HostIpConfig(dhcp => 0, 
+                                          ipAddress => $ip, 
+                                          subnetMask => $netmask);
+         } elsif ($unset_ip) {
+            $ip_config = new HostIpConfig(dhcp => 0,
+                                          ipAddress => "",
+                                          subnetMask => "");         
+         }
+      } else {
+         my $address,
+         my $length;
+         my $ipV6Address;
+
+         if ($ip && $ip ne "AUTOCONF") {
+            ($address, $length) = parse_v6Address($ip);
+            Opts::assert_usage((defined($address) && (defined($length)) && ($ip =~ /autoconf/i)),
+                               "IPv6 address must be specified in this format <X:X:X::/X>.");
+ 
+            my $ipV6Address = new HostIpConfigIpV6Address(ipAddress => $address,
+                                                          prefixLength => $length,
+                                                          operation => "add");
+            $ipV6Config = new HostIpConfigIpV6AddressConfiguration(ipV6Address => [$ipV6Address]);
+            $ip_config->ipV6Config($ipV6Config);
+         } elsif ($unset_ip && $unset_ip ne "AUTOCONF") {
+            ($address, $length) = parse_v6Address($unset_ip);
+            Opts::assert_usage((defined($address) && (defined($length)) && ($unset_ip =~ /autoconf/i)),
+                               "IPv6 address must be specified in this format <X:X:X::/X>.");
+
+            my $ipV6Address = new HostIpConfigIpV6Address(ipAddress => $address,
+                                                          prefixLength => $length,
+                                                          operation => "remove");         
+            $ipV6Config = new HostIpConfigIpV6AddressConfiguration(ipV6Address => [$ipV6Address]);
+            $ip_config->ipV6Config($ipV6Config);         
+         }
+      }
+   }
+   
+   if ($ip && $ip =~ /autoconf/i) {
+      $ip_config->ipV6Config(new HostIpConfigIpV6AddressConfiguration(ipV6Address => []));
+      $ip_config->ipV6Config->autoConfigurationEnabled(1);
+   } elsif ($unset_ip && $unset_ip =~ /autoconf/i) {
+      $ip_config->ipV6Config(new HostIpConfigIpV6AddressConfiguration(ipV6Address => []));
+      $ip_config->ipV6Config->autoConfigurationEnabled(0);
+   }
+   
+   my $vnic_spec;
+
+   if (defined($pg)) {
+      $vnic_spec = new HostVirtualNicSpec(ip => $ip_config);
+   } else {
+      $pg = "";
+      my $sUuid = getSwitchUuid($ns, $dvsName);
+      my $dvport = new DistributedVirtualSwitchPortConnection(portKey => $dvportId,
+                                                              switchUuid => $sUuid);
+      $vnic_spec = new HostVirtualNicSpec(ip => $ip_config);
+   }
+   
+   eval {
+      if ($new) {
+         eval {
+            if (defined $mtu) {
+               $vnic_spec->mtu($mtu);
+            }
+            if (defined $tso) {
+               $vnic_spec->tsoEnabled(0);
+            }
+         };
+         
+         $ns->AddVirtualNic(portgroup => $pg, 
+                            nic => $vnic_spec);
+      } else {
+         if ($vnic) {
+            $ns->UpdateVirtualNic(device => $vnic->device, 
+                                  nic => $vnic_spec);
+         } else {
+            VIExt::fail("Failed to update vmkernel nic: device not found");
+         }
+      }
+   };
+   if ($@) {
+      VIExt::fail("Failed to " . ($new ? "add" : "update") . 
+                  " vmkernel nic: " . ($@->fault_string));
+   }
+}
+
+sub add {
+   my ($ns, $pg, $ip, $netmask, $dvsName, $dvportId) = @_;
+   add_or_modify(1, $ns, $pg, $ip, $netmask, $dvsName, $dvportId);
+}
+
+sub modify {
+   my ($ns, $pg, $ip, $netmask, $dvsName, $dvportId) = @_;
+   add_or_modify(0, $ns, $pg, $ip, $netmask, $dvsName, $dvportId);
+}
+
+sub remove {
+   my ($ns, $pg, $dvsName, $dvportId) = @_;
+   eval {
+      my $vnic = find_vnic($ns, $pg, $dvsName, $dvportId);
+      if ($vnic) {
+         $ns->RemoveVirtualNic(device => $vnic->device);
+      } else {
+         VIExt::fail("Failed to remove vmkernel nic: device not found");
+      }
+   };
+   if ($@) {
+      VIExt::fail("Failed to remove vmkernel nic: " . ($@->fault_string));
+   }
+}
+
+sub is_dhcp {
+   my ($ip) = @_;
+   my $dhcp = 0;
+   
+   if ($ip && $ip =~ /dhcp/i) {
+      $dhcp = 1;
+   }
+   
+   return $dhcp;
+}
+
+sub is_v4 {
+   my ($ip) = @_;
+   my $v4 = 0;
+   
+   if ($ip && ($ip =~ /^\d+(?:\.\d+){3}$/ || $ip eq "DHCP" || $ip eq "V4")) {
+      $v4 = 1;
+   }
+
+   return $v4;
+}
+
+sub parse_v6Address {
+   my ($ip) = @_;
+   my $address = undef;
+   my $length = undef;
+   
+   if ($ip && $ip =~ /(.*)\/(.*)/) {
+      $address = $1;
+      $length = $2;
+   }
+   return ($address, $length);
+}
+
+sub enableIPv6 {
+   my ($ns, $flag) = @_;
+   
+   if (!($flag eq 'true' or $flag eq 'false')) {
+      # bug 425745
+      VIExt::fail("Invalid value specified. Value should be either true or false.");
+   }
+   
+   my $networkConfig = HostNetworkConfig->new(ipV6Enabled => (($flag eq 'true') ? 1 : 0));
+   
+   eval {
+      $ns->UpdateNetworkConfig(config => $networkConfig,
+                               changeMode => 'modify');
+   };
+   if ($@) {
+      VIExt::fail("Unable to update IPv6 configuration: " . ($@->fault_string));
+   }
+   print "Please reboot the system now for the change to take effect.\n"
+}
+
+sub getSwitchUuid {
+   my ($ns, $dvsName) = @_;
+   
+   my $switchUuid;
+   
+   my $proxySwitches = $ns->networkInfo->proxySwitch;
+   
+   if (defined $proxySwitches) {
+      foreach my $proxySwitch (@$proxySwitches) {
+         return $proxySwitch->dvsUuid if ($dvsName eq $proxySwitch->dvsName);
+      }
+   }
+   
+   return undef;
+}
+
+sub getDvsName {
+   my ($ns, $switchUuid) = @_;
+   my $dvsName;
+   
+   my $proxySwitches = $ns->networkInfo->proxySwitch;
+   
+   if (defined $proxySwitches) {
+      foreach my $proxySwitch (@$proxySwitches) {
+         return $proxySwitch->dvsName if ($switchUuid eq $proxySwitch->dvsUuid);
+      }
+   }
+
+   return undef;
+}
+
+sub enable_or_disable {
+   my ($enable, $ns, $pg, $vs,$dvsName,$dvportId) = @_;
+   my $vnic = find_vnic($ns, $pg,$dvsName,$dvportId);
+
+   eval {
+      if ($vnic) {
+         if ($vs->isa('HostVirtualNicManager')) {
+            if ($enable) {
+               $vs->SelectVnicForNicType(nicType => "vmotion",
+                                          device => $vnic->device);
+            } else {
+               $vs->DeselectVnicForNicType(nicType => "vmotion",
+                                            device => $vnic->device);
+            }
+         } else {
+            if ($enable) {
+               $vs->SelectVnic(device => $vnic->device);
+            } else {
+               $vs->DeselectVnic();
+            }
+         }
+      } else {
+         VIExt::fail("Failed to " . ($enable ? "enable" : "disable") .
+                  " VMkernel NIC for VMotion: " . "device not found");
+      }
+   };
+   if ($@) {
+      VIExt::fail("Failed to " . ($enable ? "enable" : "disable") .
+                  " VMkernel NIC for VMotion: " . ($@->fault_string));
+   }
+}
+
+__END__
+
+=head1 NAME
+
+vicfg-vmknic - configure virtual network adapters
+
+=head1 SYNOPSIS
+
+ vicfg-vmknic [conn_options] 
+    [--add --ip<address> --netmask <netmask> <port-group-name> |
+     --delete <nic_name> |
+     --disable-vmotiion <portgroup> |
+     --dvs-name <dvs> |
+     --dvport_id <port_id> |
+     --enable-ipv6 [true|false] |
+     --enable-vmotion <portgroup> |
+     --help |
+     --ip <address> |
+     --list |
+     --mtu <mtu> |
+     --netmask <netmask> |
+     --portgroup <port_group> |
+     --tso |
+     --unset-ip |
+     --vihost <esx_host> ]
+
+=head1 DESCRIPTION
+
+The vicfg-vmknic command configures VMkernel NICs (virtual network adapters). 
+
+Use the C<esxcli swisis nic> command to specify NIC bindings for VMkernel NICs. 
+
+=head1 OPTIONS
+
+=over
+
+=item B<conn_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-vmknic --help>
+for a list of all connection options.
+
+=item B<--add | -a> 
+
+Adds a VMkernel NIC to the system. You must specify the IP address using --ip, 
+the netmask, and the port group name. When the command completes successfully, 
+the newly added VMkernel NIC is enabled.
+
+You cannot specify the dvsName and dvportId parameters with this option.
+
+=item B<--delete | -d> <port_group>
+
+Delete the VMkernel NIC on the given port group. 
+The port group name is the same as the VMkernel NIC name. 
+
+=item B<--disable-vmotion | -u> <port_group>
+
+Disables VMotion for the VMkernel NIC on a specified port group.
+
+=item B<--dvs-name | -s>
+
+Specifies the distributed virtual switch (DVS) name to use as a connection point. 
+DVS is also known as vNetwork Distributed Switch (VDS). Requires that C<--dvport-id> is also specified. 
+
+=item B<--dvport-id | -v>
+
+Specifies the distributed virtual port ID of the connection point. 
+Requires that C<--dvs-name> is also specified.
+
+=item B<--enable-ipv6 | -6> true | false
+
+Enables or disables IPv6 for this VMkernel NIC for the next boot. 
+Valid for vSphere 4.0 and later.
+
+=item B<--enable-vmotion | -E> <port_group>
+
+Enables VMotion for the VMkernel NIC on a specified port group.
+By default, VMotion is disabled for a port group. To perform migration with 
+VMotion over the network, you have to enable VMotion.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--ip | -i> <ip_address> | DHCP
+
+Sets the IP address for this VMkernel NIC.
+If you specify DHCP, the VMkernel must support DHCP.
+IP address can be in one of the following format:
+
+=over
+
+=item * 
+
+<X.X.X.X>   - Use the specified static IPv4 address
+
+=item * 
+
+DHCP        - Enable IPv4 DHCP for address
+
+=item * 
+
+<X:X:X::/X> - Use the specified static IPv6 address (valid for vSphere 4.0 and later)
+
+=item * 
+
+DHCPV6      - Enable the IPv6 DHCP address (valid for vSphere 4.0 and later)
+
+=item * 
+
+AUTOCONF    - Enable the IPv6 address advertised by the router (valid for vSphere 4.0 and later)
+
+=back
+
+=item B<--list | -l>
+
+Lists all VMkernel NICs on the system. 
+The list contains the network information, port group, MTU, 
+and current state for each virtual network adapter in the system.
+
+=item B<--mtu | -m> <mtu>
+
+MTU (maximum transmission unit) for the interface being created (valid for vSphere 4.0 and later).
+
+=item B<--netmask | -n> <netmask>
+
+IP netmask (X.X.X.X) to be used for the virtual network adapter. 
+When you set a netmask, you must specify the --ip option in the same command. 
+
+=item B<--portgroup | -p>
+
+Specifies the port group to use as connection point.
+
+=item B<--tso | -t>
+
+Disables TCP Segment Offloading (TSO) for the VMkernel NIC being created. By default, TSO is 
+enabled for a virtual NIC. When you specify this option, TSO is disabled for the virtual NIC
+that is being created (valid for vSphere 4.0 and later). 
+
+=item B<--unset-ip | -U>
+
+Unsets the IP address for this VMkernel NIC (valid for vSphere 4.0 and later). 
+The address can have one of the following format:
+
+=over
+
+=item *   
+
+<X:X:X::/X> - Remove the specified IPv6 address
+
+=item *    
+
+DHCPV6 - Disable the IPv6 DHCP address
+
+=item * 
+
+AUTOCONF - Disable the IPv6 address advertised by the router. 
+
+=back
+
+=item B<--vihost | -h>
+
+When you run a vSphere CLI command with the 
+--server option pointing to a vCenter Server system, use
+--vihost to specify the ESX/ESXi host to run the command against. 
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run vicfg-vmknic --help for a list of common options including connection options.
+
+Add a VMkernel NIC to the system:
+
+ vicfg-vmknic <conn_options> -a --ip <IP address> -n <net mask> "VMkernel NIC Name"
+
+Delete a VMkernel NIC:
+
+ vicfg-vmknic <conn_options> -d "VMkernel NIC 37"
+
+Add a VMkernel NIC to the system:
+
+ vicfg-vmknic <conn_options> -a --ip <IP address> -n <net mask> --dvs-name "dvs-001" --dvport-id 1
+
+Delete a VMkernel NIC:
+
+ vicfg-vmknic <conn_options> -d --dvs-name "dvs-001" --dvport-id 1
+
+List all the VMkernel NICs:
+
+ vicfg-vmknic <conn_options> -l
+
+Modify a VMkernel NIC's IP address and netmask:
+
+ vicfg-vmknic <conn_options --ip <IP address> -n <net mask> "VMkernel NIC 37"
+
+Set the VMkernel NIC to use DHCP:
+
+ vicfg-vmknic <conn_options>  --ip DHCP "VMkernel NIC 37"
+
+Enable IPv6 for the VMkernel NIC for the next boot:
+
+ vicfg-vmknic VMkernel  --enable-ipv6 true
+
+Enable VMotion for the VMkernel NIC on a specified portgroup:
+
+ vicfg-vmknic <conn_options> --enable-vmotion "portgroup 42"
+
+Disable VMotion for the VMkernel NIC on a specified portgroup:
+
+ vicfg-vmknic <conn_options> --disable-vmotion "portgroup 42"
+
+=cut

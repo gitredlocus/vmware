@@ -1,0 +1,362 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+#
+# VMware ESX Server Advanced Configuration Option Tool
+# 
+# SYNOPSIS
+#      vicfg-advcfg OPTIONS
+# 
+# DESCRIPTION
+#      vicfg-advcfg provides an interface to query and modify the advanced
+#      options of the VMkernel. These options control a wide variety of 
+#      different areas in the VMkernel including storage, resource, and 
+#      networking global settings.
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!
+             The host to use when connecting via a vCenter Server.
+      !,
+      required => 0,
+   },
+   get => {
+      alias => "g",
+      type => "",
+      help => qq!
+             Get the value of a specific configuration item given its 
+             identifying path, and print the value to stdout.
+      !,
+      required => 0,
+   },
+   set => {
+      alias => "s",
+      type => "=s",
+      argval => "<value>",
+      help => qq!
+             Set the value of a specific configuration item given its
+             identifying path and the value to set. This may fail silently, 
+             if the value given is constrained by other options or 
+             VMkernel settings.
+      !,
+      required => 0,
+   },
+   'list' => {
+      alias => "l",
+      type => "",
+      help => qq!    List all VMkernel advanced config options.!,
+      required => 0,
+   },
+   default => {
+      alias => "d",
+      type => "",
+      help => qq!
+             Set the value of a specific configuration item to the default
+             value defined by the VMkernel.
+      !,
+      required => 0,
+   },
+   'set-kernel' => {
+      alias => "k",
+      type => "=s",
+      help => qq!
+             <value> <kernelOption>
+             Set a VMkernel boot parameter.
+      !,
+      required => 0,
+   },
+   'get-kernel' => {
+      alias => "j",
+      type => "",
+      help => qq!
+             <kernelOption>
+             Get the value of a VMkernel boot parameter.
+      !,
+      required => 0,
+   },
+   'set-message' => {
+      alias => "m",
+      type => "=s",
+      help => qq!
+             Set DCUI welcome message (valid for vSphere 4.0 and later).
+      !,
+      required => 0,
+   },
+   'quiet' => {
+      alias => "q",
+      type => "",
+      help => qq!
+             Perform any of the other options but suppress output to stdout.
+      !,
+      required => 0,
+   },
+   _default_ => {
+      type => "=s",
+      argval => "<path>",
+      help => qq!
+             The path to the advanced configuration variable.
+      !,
+      required => 0,
+   },
+);
+
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $key = Opts::get_option('_default_');
+my $get = Opts::get_option('get');
+my $getkernel = Opts::get_option('get-kernel');
+my $set = Opts::get_option('set');
+my $setkernel = Opts::get_option('set-kernel');
+my $setmessage = Opts::get_option('set-message');
+my $quiet = Opts::get_option('quiet');
+my $default = Opts::get_option('default');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['configManager.advancedOption']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+my $adv_opt = 
+   Vim::get_view (mo_ref => $host_view->{'configManager.advancedOption'});
+
+if (!defined $setmessage && !defined Opts::get_option('list')) {
+   Opts::assert_usage(defined($key), "Must specify a " . 
+                   (($getkernel || $setkernel) ? "kernel option name." : "path."));
+}
+
+if (defined $get) {
+   get($adv_opt, $key);
+} elsif (defined $set) {
+   set($adv_opt, $key, $set);
+} elsif (defined $getkernel) {
+   get($adv_opt, "VMkernel.Boot." . $key);
+} elsif (defined $setkernel) {
+   set($adv_opt, "VMkernel.Boot." . $key, $setkernel);
+} elsif (defined $setmessage) {
+   set($adv_opt, "Annotations.WelcomeMessage", $setmessage);
+} elsif (defined $default) {
+   setdefault($adv_opt, $key);
+} elsif (Opts::get_option('list')) {
+   list($adv_opt);
+} else {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+
+sub setdefault {
+   my ($ao, $key) = @_;
+
+   my ($name, $value) = VIExt::set_advoption_default($ao, $key);
+
+   if (defined($name) && defined($value)) {
+      unless ($quiet) {
+         printf("%s reset to default\nValue of %s is %s\n",
+                $name, $name, $value);
+      }
+   } else {
+      VIExt::fail("Option $key not found.");
+   }
+}
+
+sub get {
+   my ($ao, $key) = @_;
+
+   my ($name, $value) = VIExt::get_advoption($ao, $key);
+   if (defined($name) && defined($value)) {
+      unless ($quiet) {
+         printf("Value of %s is %s\n", $name, $value);
+      }
+   }
+   else {
+      VIExt::fail("Option $key not found.");
+   }
+}
+
+sub set {
+   my ($ao, $key, $set) = @_;
+   my $name = VIExt::set_advoption($ao, $key, $set);
+   if (defined($name)) {
+      unless ($quiet) {
+         printf("Value of %s is %s\n", $name, $set);
+      }
+   } else {
+      VIExt::fail("Option $key not found.");
+   }
+}
+
+sub list {
+   my ($ao) = @_;
+
+   my $optList = $ao->supportedOption();
+   foreach my $optDef (@$optList) {
+      printf("%s : %s\n", $optDef->key, $optDef->summary);
+   }
+}
+
+__END__
+
+=head1 NAME
+
+vicfg-advcfg - query and modify advanced VMkernel options. Use when instructed by Technical Support.
+
+vicfg-advcfg - enable and disable CIM providers. 
+
+=head1 SYNOPSIS
+
+ vicfg-advcfg <connection_options>
+   [--default <value> |
+    --get <path> |
+    --get-kernel <boot_parameter> |
+    --quiet |
+    --help |
+    --set <value> <option> |
+    --set 0|1 UserVars.CIMEnabled |
+    --set 0|1 UserVars.CIMOEMProvidersEnabled |
+    --set 0|1 UserVars.CIMCustomProvidersEnabled |
+    --set-kernel <value> <boot_parameter> |
+    --set-message <message> |
+    --vihost <esx_target>]    
+    
+
+=head1 DESCRIPTION
+
+The vicfg-advcfg command offers a number of low-level advanced options. 
+
+Most options are not intended for customer use. You might use this command when 
+VMware Technical Support or a VMware Knowledge Base article instruct you to do so. 
+
+You can use the C<vicfg-advcfg -s> option to enable and disable CIM providers. 
+
+=head1 OPTIONS
+
+=over
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-advcfg --help>
+for a list of all connection options.
+
+=item B<--default | -d E<lt>optionE<gt>>
+
+Sets the value of a specific configuration item to the default 
+value defined by the VMkernel. Use this option
+when VMware Technical Support or a VMware Knowledge Base article instruct you to do so.
+
+=item B<--get | -g E<lt>config_optionE<gt>> 
+
+Gets the value of a configuration option based on its path, and print the value to stdout. Use this option
+when VMware Technical Support or a VMware Knowledge Base article instruct you to do so.
+
+=item B<--get-kernel | -j E<lt>boot_paramE<gt>>
+
+Gets the value of a VMkernel boot parameter. Use this option
+when VMware Technical Support or a VMware Knowledge Base article instruct you to do so.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with --help has the same effect.
+
+=item B<--quiet | -q>
+
+No output to stdout while executing the command. 
+
+=item B<--set | -s E<lt>valueE<gt> E<lt>optionE<gt>>
+
+Sets the value of a configuration option based on its path. Use this option
+when VMware Technical Support or a VMware Knowledge Base article instruct you to do so.
+
+=item B<--set | -s 0|1 UserVars.CIMEnabled>
+
+Enables or disables all CIM providers. 
+
+=item B<--set | -s 0|1 UserVars.CIMOEMProvidersEnabled>
+
+Enables or disables OEM CIM providers. 
+
+=item B<--set | -s 0|1 UserVars.CIMCustomProvidersEnabled>
+
+Enables or disables IHV CIM providers. 
+
+=item B<--set-kernel | -k E<lt>valueE<gt> E<lt>boot_paramE<gt>>
+
+Sets the value of a VMkernel boot parameter. Use this option
+when VMware Technical Support or a VMware Knowledge Base article instruct you to do so.
+
+=item B<--set-message | -m E<lt>messageE<gt>>
+
+Sets DCUI welcome message (valid for vSphere 4.0 and later). Use this option
+when VMware Technical Support or a VMware Knowledge Base article instruct you to do so.
+
+=item B<--list | -l >
+
+Lists all VMkernel advanced config options.
+
+=item B<--vihost | -h E<lt>esx_target<gt>>
+
+When you execute a vSphere CLI with the C<--server> option pointing 
+to a vCenter Server System, you can use C<--vihost> to specify the ESX/ESXi
+host to run the command against.
+
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options. 
+Run C<vicfg-advcfg --help> for a list of common options including connection options. 
+
+
+Set the value of a specific configuration item given its identifying path 
+and the value to set:
+
+ vicfg-advcfg <conn_options> -s 1 VMkernel.Boot.xapicForce
+
+Get the value of a specific configuration item given its identifying path, 
+and print the value to stdout:
+
+ vicfg-advcfg <conn_options> -g VMkernel.Boot.xapicForce
+
+Set the value of a specific configuration item to the default value defined by the VMkernel:
+
+ vicfg-advcfg <conn_options> -d Irq.RoutingPolicy
+
+Retrieve a VMkernel option:
+
+ vicfg-advcfg <conn_options> --get-kernel assumeCommonBusClock
+
+Set a VMkernel option:
+
+ vicfg-advcfg <conn_options> --set-kernel 1 assumeCommonBusClock
+
+Set a DCUI welcome message
+
+ vicfg-advcfg <conn_options> --set-message "Welcome message" 
+
+Enable all CIM providers:
+
+ vicfg-advcfg.pl <conn_options> -s 1 UserVars.CIMEnabled
+
+Enable OEM CIM providers:
+
+ vicfg-advcfg.pl <conn_options> -s 1 UserVars.CIMOEMProvidersEnabled
+
+Disable IHV CIM providers:
+
+ vicfg-advcfg.pl <conn_options> -s 0 UserVars.CIMCustomProvidersEnabled
+
+=cut

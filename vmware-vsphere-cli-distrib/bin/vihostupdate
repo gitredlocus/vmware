@@ -1,0 +1,772 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+#
+# VMware ESX Server Host patching tool
+#
+
+use strict;
+use warnings;
+
+use File::Basename;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my $PADDING = 10;
+my $METADATA = "metadata.zip";
+
+my %opts = (
+   query => {
+      alias => "q",
+      type => "",
+      help => qq!
+             Query the bulletins that are already installed in the host.
+      !,
+      required => 0,
+   },
+   list => {
+      alias => "l",
+      type => "",
+      help => qq!
+             List the bulletins in the bundle or in the depot.
+      !,
+      required => 0,
+   },   
+   scan => {
+      alias => "s",
+      type => "",
+      help => qq!
+             Scan the host against the bundle or the depot for applicable bulletins.
+      !,
+      required => 0,
+   },
+   install => {
+      alias => "i",
+      type => "",
+      help => qq!
+             Install the host with selective bulletins from the bundle, the depot or local offline bundle.     
+      !,
+      required => 0,
+   },
+   remove => {
+      alias => "r",
+      type => "",
+      help => qq!
+             Remove selective bulletins from the host.
+      !,
+      required => 0,
+   },
+   bundle => {
+      alias => "b",
+      type => "=s",
+      help => qq!
+             Parameter to specify the location of the offline bundle.  For install operation, multiple
+             offline bundles can be specified using comma separator with no space (eg. bundle1,bundle2).
+      !,
+      required => 0,
+   },
+   metadata => {
+      alias => "m",
+      type => "=s",
+      help => qq!
+             Parameter to specify the location of the depot metadata.zip 
+      !,
+      required => 0,
+   },
+   bulletin => {
+      alias => "B",
+      type => "=s",
+      help => qq!
+             Parameter to specify the selective bulletin(s) to install. Use
+             comma to specify multiple bulletins (eg. bulletin1,bulletin2).
+             All bulletins will be installed if this option is not specified.
+      !,
+      required => 0,
+   },
+   nosigcheck => {
+      alias => "c",
+      type => "",
+      help => qq!
+             Ignore integrity checking during install operation (unsupported).
+      !,
+      required => 0,
+   },   
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['config.product.version', 'configManager.patchManager']);
+unless ($host_view) {
+   VIExt::fail("Host not found.\n");
+}
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+check_version($host_view);
+
+my $patch_manager = Vim::get_view(mo_ref => $host_view->{'configManager.patchManager'});
+unless ($patch_manager) {
+   VIExt::fail("Patch manager is not found on this system.\n");
+}
+   
+my $query = Opts::get_option('query');
+my $list = Opts::get_option('list');
+my $scan = Opts::get_option('scan');
+my $install = Opts::get_option('install');
+my $remove = Opts::get_option('remove');
+my $bundle = Opts::get_option('bundle');
+my $metadata = Opts::get_option('metadata');
+my $bulletin = Opts::get_option('bulletin');
+my $nosigcheck = Opts::get_option('nosigcheck');
+
+Opts::assert_usage(!($metadata && $bundle),  
+                   "\nThe metadata and bundle options cannot be both specified.");
+
+if ($query) {
+   eval { 
+      my $result = $patch_manager->QueryHostPatch();
+      Util::trace(2, "\nXML-HA: " . Dumper($result->{xmlResult}));
+      my $xml_parser = XML::LibXML->new;
+      
+      eval {
+         my $root = $xml_parser->parse_string($result->{xmlResult})->documentElement();
+         
+         if ($result->{xmlResult} =~ /error /) {
+            display_error($root, 1);
+         } else {
+            printf("%-30s%-20s%-40s\n", "---------Bulletin ID--------- ", "-----Installed----- ", "----------------Summary-----------------");
+            my $root = $xml_parser->parse_string($result->{xmlResult})->documentElement();
+            my @bulletins = $root->findnodes('bulletin');
+            foreach (@bulletins) {
+               my $installDate = $_->findvalue('installDate');
+               if ($installDate =~ /(.*)\./) {
+                  $installDate = $1;
+               }
+               printf("%-30s%-20s%-40s\n", $_->findvalue('id'), $installDate, $_->findvalue('summary'));
+            }
+         }
+      };
+      if ($@) {
+         die "Error in parsing XML result.\n";
+      }
+   };
+   if ($@) {
+      VIExt::fail("Query operation failed: " . $@);
+   }
+} elsif ($list) {
+   do_scan_or_list(0);
+} elsif ($scan) {
+   do_scan_or_list(1);
+} elsif ($install) {
+   eval {
+      my $path;
+      my $location = undef;
+      my $total = 0;
+      my $offline = 0;
+      my $result;
+      my @bundles = undef;
+      my @bulletins = undef;
+      
+      my $option = "";
+
+      # clean cache
+      do_check(0);
+      
+      if ($nosigcheck) {
+         $option = $option . " --nosigcheck";
+      }
+      
+      my $spec = new HostPatchManagerPatchManagerOperationSpec(cmdOption => $option);
+            
+      if ($bundle) {
+         my @items  = split(/,/, $bundle);
+         
+         foreach (@items) {
+            if (!(($_ =~ /ftp:/) || ($_ =~ /http(.?):/) || ($_ =~ /file:/))) {
+               unless (-e $_) {
+                  VIExt::fail("Local offline bundle file $_ does not exist.");
+               }
+               $offline = 1;
+               # pre-calculate all required cache size for ESXi
+               $total = $total + int((-s $_)*2.3/1024/1024);
+            }
+         }
+         
+         # bug 400921: reserve extra space for esxupdate unzipping
+         if ($offline) {
+            $location = do_check(1, $total + $PADDING);
+         } else {
+            # bug 480916
+            do_check(1, 0);
+         }
+         
+         foreach (@items) {
+            if ($location) {
+               $path = push_bundle($_, 0, 0, $location);
+               if ($path) {
+                  push @bundles, $path;
+               }
+            } else {
+               push @bundles, $_;
+            }
+         }       
+      } else {
+         if ($metadata) {
+            if (!(($metadata =~ /ftp:/) || ($metadata =~ /http(.?):/) || ($metadata =~ /file:/))) {
+               die "This operation does not support local metadata.\n";
+            }
+         }
+      }
+     
+      if ($bulletin) {
+         my @items  = split(/,/, $bulletin);
+         foreach (@items) {
+            push @bulletins, $_;
+         }
+      
+         if ($metadata) {
+            print "Please wait patch installation is in progress ...\n";
+            $result = $patch_manager->InstallHostPatchV2(metaUrls => $metadata,
+                                                         vibUrls => \@bulletins,
+                                                         spec => $spec);
+         } elsif ($bundle) {
+            print "Please wait patch installation is in progress ...\n";
+            $result = $patch_manager->InstallHostPatchV2(bundleUrls => \@bundles,
+                                                         vibUrls => \@bulletins,
+                                                         spec => $spec);
+         } else {
+            VIExt::fail("Install operation failed: The metadata or bundle option must be specified.");            
+         }
+      } else {
+         if ($metadata) {
+            print "Please wait patch installation is in progress ...\n";
+            $result = $patch_manager->InstallHostPatchV2(metaUrls => $metadata,
+                                                         spec => $spec);
+         } elsif ($bundle) {
+            print "Please wait patch installation is in progress ...\n";
+            $result = $patch_manager->InstallHostPatchV2(bundleUrls => \@bundles,
+                                                         spec => $spec);
+         } else {
+            VIExt::fail("Install operation failed: The metadata or bundle option must be specified.");            
+         }      
+      }
+      
+      Util::trace(2, "\nXML-HA: " . Dumper($result->{xmlResult})); 
+      my $xml_parser = XML::LibXML->new;
+      
+      eval {
+         my $root = $xml_parser->parse_string($result->{xmlResult})->documentElement();
+         
+         if ($result->{xmlResult} =~ /error /) {
+            display_error($root, 0);
+         } else {
+            print "Host updated successfully.\n";
+         }
+      };
+      if ($@) {
+         die "Error in parsing XML result.\n";
+      }      
+   };
+   if ($@) {
+      VIExt::fail("Install operation failed: " . $@);
+   }
+} elsif ($remove) {
+   eval {
+      my $path;
+      my $result;
+      my @bulletins = undef;
+      my $option = "";
+      my $spec = new HostPatchManagerPatchManagerOperationSpec(cmdOption => $option);
+      if ($bulletin) {
+         my @items  = split(/,/, $bulletin);
+         foreach (@items) {
+            push @bulletins, $_;
+         }
+      
+         $result = $patch_manager->UninstallHostPatch(bulletinIds => \@bulletins,
+                                                      spec => $spec);
+         Util::trace(2, "\nXML-HA: " . Dumper($result->{xmlResult})); 
+         my $xml_parser = XML::LibXML->new;
+      
+         eval {
+            my $root = $xml_parser->parse_string($result->{xmlResult})->documentElement();
+
+            if ($result->{xmlResult} =~ /error /) {
+               display_error($root, 1);
+            } else {
+               print "Removed bulletin from host successfully.\n";
+            }
+         };
+         if ($@) {
+            die "Error in parsing XML result.\n";
+         }      
+      } else {
+         die "Bulletin ID(s) must be specified to uninstall\n";
+      }
+   };
+   if ($@) {
+      VIExt::fail("Uninstall operation failed: " . $@);
+   }
+} else {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+
+
+sub do_scan_or_list {
+   my ($scan) = @_;
+   
+   eval {
+      my $path;
+      my $result;
+
+      # bug 504996 - clean cache
+      do_check(0);
+      
+      if ($metadata) {
+         $path = push_bundle($metadata, 0, 1);
+         
+         if ($path) {
+            $metadata = $path;
+         }
+         
+         $result = $patch_manager->ScanHostPatchV2(metaUrls => $metadata);
+      } elsif ($bundle) {
+         $path = push_bundle($bundle, 1, 1);
+         
+         if ($path) {
+            $result = $patch_manager->ScanHostPatchV2(metaUrls => $path);
+         } else {
+            $result = $patch_manager->ScanHostPatchV2(bundleUrls => $bundle);
+         }
+         
+         # clean cache
+         do_check(0);
+      } else {
+         VIExt::fail("Scan operation failed: The metadata or bundle option must be specified.");
+      }
+      
+      Util::trace(2, "\nXML-HA: " . Dumper($result->{xmlResult}));      
+      my $xml_parser = XML::LibXML->new;
+      
+      eval {
+         my $root = $xml_parser->parse_string($result->{xmlResult})->documentElement();
+         
+         if ($result->{xmlResult} =~ /error /) {
+            display_error($root, 1);
+         } else {
+            if ($scan) {
+               print("The bulletins which apply to but are not yet installed on this ESX host are listed.\n");
+            }
+            printf("\n%-30s%-42s\n", "---------Bulletin ID--------- ", "  ----------------Summary-----------------");            
+            my @bulletins = $root->findnodes('bulletin');
+            foreach (@bulletins) {
+               if ($scan) {
+                  if (($_->findvalue('matchesPlatform') eq 'true') && 
+                      ($_->findvalue('newerVibs') eq 'true')) {
+                     printf("%-32s%-40s\n", $_->findvalue('id'), $_->findvalue('summary'));
+                  }
+               } else {
+                  printf("%-32s%-40s\n", $_->findvalue('id'), $_->findvalue('summary'));
+               }
+            }
+         }
+      };
+      if ($@) {
+         die "Error in parsing XML result.\n";
+      }
+   };
+   if ($@) {
+      # clean cache
+      do_check(0);
+      
+      if ($scan) {
+         VIExt::fail("Scan operation failed: " . $@);
+      } else {
+         VIExt::fail("List operation failed: " . $@);
+      }
+   }
+}
+
+sub display_error {
+   my ($root, $is_error) = @_;
+   my @errors = $root->findnodes('error');
+   
+   foreach (@errors) {
+      if ($is_error) {
+         print("Error encountered:\n");
+         if ($_->findvalue('message')) {
+            print("   Description - " . $_->findvalue('message') . "\n");
+         }
+         print("   Message     - " . $_->findvalue('errorDesc') . "\n");
+      } else {
+         print($_->findvalue('errorDesc') . "\n");
+         my @problemsets = $_->findnodes('problemset');
+         foreach (@problemsets) {
+            my @c = $_->findnodes("problem");
+            foreach (@c) {
+               print("   " . $_->textContent() . "\n");
+            }
+         }
+      }
+   }
+   
+   # bug 341731
+   if ($is_error) { 
+      VIExt::fail("");
+   }
+}
+
+sub do_check {
+   my ($reserve, $size) = @_;
+   my $path;
+   my $spec;
+   my $result;
+   my $available;
+   
+   eval {
+      if ($reserve) {
+         $spec = new HostPatchManagerPatchManagerOperationSpec(cmdOption => "--cachesize " . $size);
+      } else {
+         $spec = new HostPatchManagerPatchManagerOperationSpec(cmdOption => "--cleancache");
+      }
+      
+      $result = $patch_manager->CheckHostPatch(spec => $spec);
+      
+      Util::trace(2, "\nXML-HA: " . Dumper($result->{xmlResult}));      
+      my $xml_parser = XML::LibXML->new;
+      
+      eval {
+         my $root = $xml_parser->parse_string($result->{xmlResult})->documentElement();
+         
+         if ($result->{xmlResult} =~ /error /) {
+            display_error($root, 1);
+         } else {
+            my @paths = $root->findnodes('cache');
+            foreach (@paths) {
+               $path = $_->findvalue('location');
+               $available = $_->findvalue('size');
+               if ($reserve) {
+                  Util::trace(2, "Requested $size MB and $available MB is allocated at $path\n");
+               }
+            }
+         }
+      };
+      if ($@) {
+         die "Error in parsing XML result.\n";
+      }      
+   };
+   if ($@) {
+      VIExt::fail("Check operation failed: " . $@);
+   }
+
+   if ($reserve && ($size > $available)) {
+      die "Insufficient space available on host (require $size MB and only $available MB available).\n";
+   }
+   
+   # strip out /tmp
+   if ($path =~ /\/tmp(.*)/) {
+      $path = $1;
+   }
+   return $path;
+}
+
+sub push_bundle {
+   my ($bundle, $meta_only, $reserve, $location) = @_;
+   my $path;
+   
+   if ($bundle) {
+      if (!(($bundle =~ /ftp:/) || ($bundle =~ /http(.?):/) || ($bundle =~ /file:/))) {
+         unless (-e $bundle) {
+            VIExt::fail("Local offline bundle file $bundle does not exist.");
+         }
+      } else {
+         if ($reserve) {
+            # bug 480916, 504996
+            do_check(1, 0);
+         }
+         
+         return undef;
+      }
+   }
+            
+   if ($meta_only) {
+      unpack_metadata($bundle);
+      if ($reserve) {
+         $path = do_check(1, int((-s $METADATA)*2.3/1024/1024) + $PADDING);         
+      } else {
+         $path = $location;
+      }
+      $path .= "/" . $METADATA;
+      Util::trace(2, "Copy $METADATA to server at /tmp$path\n");
+      VIExt::http_put_tmp_file($METADATA, $path, undef);
+   } else {      
+      if ($reserve) {
+         # bug 400921: reserve extra space for esxupdate unzipping
+         $path = do_check(1, int((-s $bundle)*2.3/1024/1024) + $PADDING);        
+      } else {
+         $path = $location;
+      }
+      $path .= "/" . basename($bundle);
+      Util::trace(2, "Copy $bundle to server at /tmp$path\n");
+      VIExt::http_put_tmp_file($bundle, $path, undef);
+   }
+   
+   return "/tmp" . $path;
+}
+
+sub unpack_metadata{
+   my ($bundle) = @_;
+
+   my $zip = Archive::Zip->new();
+
+   if ($zip->read($bundle) != Archive::Zip::AZ_OK) {
+      VIExt::fail("Failed to read offline bundle file $bundle.");
+   }
+
+   if ($zip->memberNamed($METADATA)) {
+      if ($zip->extractMember($METADATA) != Archive::Zip::AZ_OK) {
+         VIExt::fail("Extract of $METADATA failed.");
+      }
+   } else {
+      VIExt::fail("File $METADATA does not exist in the offline bundle.");
+   }
+}
+
+sub check_version {
+   my ($host_view) = @_;
+   my $host_version = $host_view->{'config.product.version'};
+   if ($host_version ne 'e.x.p' && $host_version !~ /^4./) {
+      VIExt::fail("This operation is NOT supported on $host_version platform.");
+   }
+}
+
+
+__END__
+
+=head1 NAME
+
+vihostupdate - manage software installation packages on an ESX/ESXi host.
+
+=head1 SYNOPSIS
+
+ vihostupdate [<connection_options>]
+  [ --help |
+    --install [--bundle <zip_location>|--metadata <zip_location>] |
+    --list [--bundle <zip_location>|--metadata <zip_location>] |
+    --query |
+    --remove <bulletin> |
+    --scan [--bundle <location>|--metadata <zip_location>]]
+    
+
+=head1 DESCRIPTION
+
+The vihostupdate command applies software updates to ESX/ESXi images and installs 
+and updates ESX/ESXi extensions such as VMkernel modules, drivers, and CIM providers. 
+
+The vihostupdate command works with bulletins. Each bulletin consists of one or more vSphere bundles 
+and addresses one or more issues. A bulletin is considered to be included in another bulletin if 
+every vSphere bundle in the first bulletin meets one of these criteria:
+
+=over
+
+=item *
+
+The vSphere bundle is included in the second bulletin. 
+
+=item *
+
+The vSphere bundle is obsoleted by another bundle in the second bulletin. 
+
+=back
+
+Towards the end of a release cycle, bulletins include a large number of other bulletins. 
+Bulletins are available in bundles and in depots with associated metadata.zip files. 
+
+=over
+
+=item *
+
+If you use offline bundles, all patches and corresponding metadata are available as one ZIP file. 
+
+=item *
+
+If you use metadata, the metadata.zip file points to metadata. The metadata 
+describes the location of the files. 
+
+=back
+
+The command supports querying software installed on a host, listing software in a patch, scanning for 
+bulletins that apply to a host, and installing all or selective bulletins in the patch. 
+You can specify a patch by using a bundle ZIP file or the metadata ZIP file of a depot. 
+The depot can be on the remote server, or you can download a bundle ZIP file and use a local depot. 
+
+vihostupdate supports https://, http://, and ftp:// downloads. You can specify the protocols 
+in the download URL for the bundle or metadata file. 
+
+See the I<ESXi Upgrade Guide> for some additional information. For more information 
+about installing, removing, and updating 3rd-Party extensions in vSphere 4.0, 
+see the I<Setup Guide>. An example is in the EXAMPLES section below. 
+
+B<Important>: Do not specify -b or -m more than once. If you do, 
+the command only processes the last file that is specified. You can specify a comma-separated
+list of bundles with --install but not with other options. That might be necessary if you want to install a VMware bundle and a third-party
+bundle. 
+
+=head1 OPTIONS
+
+=over
+
+=item B<--bulletin | -B E<lt>bulletin_listE<gt>>
+
+Bulletins to install. Use this option together with C<--bundle> or C<--metadata>. 
+
+Use a comma-separated list, for example, C<bulletin1,bulletin2>. If this option is not specified, 
+vihostupdate installs all bulletins. 
+
+=item B<--bundle | -b E<lt>locationE<gt>>
+
+Location of the offline bundle. Use either -b or -m but not both. 
+You can specify a list of bundles separated by commas but not spaces. That might be necessary 
+if you want to install a VMware bundle and a third-party bundle. The bundles can be local 
+(e.g. C:\bundle1.zip, C:\bundle2.zip) or remote (e.g. http://<server>/bundle1.zip, http://<server>/bundle2.zip). 
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vihostupdate --help>
+for a list of all connection options. 
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the command with no arguments or with C<--help> has the same effect.
+
+=item B<--install | -i [--bundle E<lt>locationE<gt> | --metadata E<lt>zip_locationE<gt>]>
+
+Installs the host with selective bulletins from the bundle or the depot. 
+Requires either -b or -m, but not both. You can specify this parameter only once.  
+
+=item B<--list | -l [--bundle E<lt>locationE<gt> | --metadata E<lt>zip_locationE<gt>]>
+
+Lists the bulletins in the specified bundle or depot. Requires either -b or -m but not both.
+
+=item B<--metadata | -m E<lt>zip_locationE<gt>>
+
+Specifies the location of the depot metadata.xml ZIP file that contains information about 
+the update bundle. Use either -b or -m, not both.
+
+=item B<--query | -q>
+
+Displays all bulletins that are already installed on the host. 
+
+=item B<--remove | -r E<lt>bulletinE<gt>>
+
+Removes the specified bulletin from the host. 
+
+Use this option for removing bulletins that are third-party or VMware extensions. 
+Do NOT remove bulletins that are VMware patches or updates.
+
+=item B<--scan | -s [--bundle E<lt>locationE<gt> | --metadata E<lt>zip_locationE<gt>]>
+
+Scans the host for the bundle or the depot for applicable bulletins.
+Requires either -b or -m but not both. 
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vihostupdate --help> for a list of common options including connection options.
+
+You can update an ESX/ESXi host using bundles by running the following commands in sequence: 
+
+=over
+
+=item 
+
+1. Find out which bulletins are installed on your ESX/ESXi host. 
+
+  vihostupdate.pl <conn_options> --query
+
+=item 
+
+2. Find out which bulletins are available in the bundle. 
+
+  vihostupdate.pl <conn_options> --list --bundle http://<webserver>/rollup.zip 
+
+=item 
+
+3. Find out which bulletins in the bundle are applicable to your ESX/ESXi host.
+
+  vihostupdate.pl <conn_options> --scan --bundle http://<webserver>/rollup.zip 
+
+=item 
+
+4. Install all or some bulletins from the bundle on the ESX/ESXi host.  
+The ESX/ESXi host is updated to the specified patch level.
+
+  vihostupdate.pl <conn_options> --install --bundle http://<webserver>/rollup.zip 
+
+=item
+
+5. If necessary, you can remove individual bulletins. Use this option only for removing bulletins 
+that are third-party or VMware extensions. Do not remove bulletins that are VMware patches or updates.
+
+  vihostupdate.pl <conn_options> --remove --bulletin bulletin1
+
+=back
+
+You can update your ESX/ESXi host using depots by running the following commands in sequence: 
+
+=over
+
+=item
+
+1. List all bulletins in the depot given the metadata.zip file location. 
+
+  vihostupdate.pl --list --metadata http://<webserver>/depot/metadata.zip
+
+=item
+
+2. Scan the depot for bulletins that are applicable to the host. 
+
+  vihostupdate.pl --scan --metadata http://<webserver>/depot/metadata.zip 
+
+=item
+
+3. Install bulletins in the depot on the host: 
+
+=over <i>8</i>
+
+=item *
+
+To install all bulletins, call:
+
+ vihostupdate.pl --install --metadata http://<webserver>/depot/metadata.zip 
+
+=item *
+
+To install selected bulletins in the specified depot on the host, use a comma-separated list. 
+Spaces after the comment are not supported. 
+
+ vihostupdate.pl --install --metadata http://<webserver>/depot/metadata.zip --bulletin bulletin1,bulletin3 
+
+=back
+=back
+
+You can deploy a third-party bundle that you have downloaded on your web server, for example: 
+
+ vihostupdate.pl <conn_options> --install --bundle https://<3rdParty_webserver>/Cisco_Swordfish.zip
+
+=cut
+
+
+

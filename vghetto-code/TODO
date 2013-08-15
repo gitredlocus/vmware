@@ -1,0 +1,5 @@
+Global Password entry.
+	Encrypt vsms.pl and SECPL.pl with RSA
+	DB entry of global_global to represent the global account information to use for all hosts
+	Tie vsms_diff scrollbars together
+	Fix Resize of window to be bigger or smaller.

@@ -1,0 +1,611 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2008 VMware, Inc.  All rights reserved.
+#
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!
+             The host to use when connecting via a vCenter Server.
+      !,
+      required => 0,
+   },
+   'list' => {
+      alias => 'l',
+      type => "",
+      help => qq!
+             List all paths on the system with their detailed information.
+      !,
+      required => 0,
+   },
+   'list-compact' => {
+      alias => 'L',
+      type => "",
+      help => qq!
+             List all paths with abbreviated information.
+      !,
+      required => 0,
+   },
+   'list-map' => {
+      alias => 'm',
+      type => "",
+      help => qq!
+             List all paths with adapter and device mappings.
+      !,
+      required => 0,
+   },
+   'list-paths' => {
+      alias => 'b',
+      type => "",
+      help => qq!
+             List all devices with their corresponding paths.
+      !,
+      required => 0,
+   },
+   'list-plugins' => {
+      alias => 'G',
+      type => "",
+      help => qq!
+             List all multipathing plugins loaded into the system.
+      !,
+      required => 0,
+   },
+   'state' => {
+      alias => 's',
+      type => "=s",
+      help => qq!
+             Set the state for a specific LUN path to either "active" or \
+             "off".  Requires path UID or path runtime name in --path.
+      !,
+   },
+   'path' => {
+      alias => 'P',
+      type => "=s",
+      help => qq!
+             Used to specify a specific path for operations. The path name \
+             may be either the long path UID or the shorter runtime name of \
+             the path.  This can be used to filter any of the list commands \
+             to a specific path if applicable.
+      !,
+   },
+   'device' => {
+      alias => 'd',
+      type => "=s",
+      help => qq!
+             Used to filter the list commands to display only a specific device. 
+      !,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $list = Opts::get_option('list');
+my $list_compact = Opts::get_option('list-compact');
+my $list_map = Opts::get_option('list-map');
+my $list_paths = Opts::get_option('list-paths');
+my $list_plugins = Opts::get_option('list-plugins');
+my $state = Opts::get_option('state');
+my $path = Opts::get_option('path');
+my $device = Opts::get_option('device');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['config.product.version', 'configManager.storageSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+check_version();
+
+my $ss =
+   Vim::get_view (mo_ref => $host_view->{'configManager.storageSystem'});
+
+if (defined $list) {
+   list($ss, 'detail', $path, $device);
+} elsif (defined $list_compact) {
+   list($ss, 'compact', $path, $device);
+} elsif (defined $list_map) {
+   list($ss, 'map', $path, $device);
+} elsif (defined $list_paths) {
+   list($ss, 'paths', $path, $device);
+} elsif (defined $list_plugins) {
+   list_plugins($ss);
+} elsif (defined $state) {
+   Opts::assert_usage($path, "Must specify a path.\n");
+   Opts::assert_usage(scalar(grep {$_ eq $state} ("active", "off")),
+                      "The state must be one of : active, off.");
+   set_state($ss, $path, $state);
+} else  {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+
+sub check_version {
+   my $host_version = $host_view->{'config.product.version'};
+   if ($host_version ne 'e.x.p' && $host_version !~ /^4./ && $host_version !~ /^5./) {
+      VIExt::fail("ESX host version is $host_version. This operation is supported on ESX 4.x, ESXi 4.x, ESXi 5.x"); 
+   }
+}
+
+sub list {
+   my ($ss, $option, $path, $device) = @_;
+   my $pst = getPlugStoreTopology($ss);
+   my $paths = undef;
+   if ($pst) {
+      my $pathStatesInfo = $ss->multipathStateInfo->path;
+      my $adapters = $ss->storageDeviceInfo->hostBusAdapter;
+      my $plugins = getPlugins($ss);
+      my %pluginNames = getPluginNames($plugins);
+      my %devices = ();
+      my %adapters = ();
+      $paths = $pst->path;
+      foreach my $p (@$paths) {
+         my $pname = $p->name;
+         my $pname2 = $pname;
+         my @ids = split("-", $pname);
+         my @tokens = split('-', $p->adapter);
+         my $adapter = $tokens[2];
+         my $hba = '';
+         foreach my $ao (@$adapters) {
+            if ($ao->device eq $adapter) {
+               $hba = $ao;
+               last;
+            }
+         }
+         # bug 415759
+         my @target = split('\.',$p->target);
+         my $channelNum = $p->channelNumber;
+         my $targetNum = $p->targetNumber;
+         my $lunNum = $p->lunNumber;
+         my $runtimeName = "$adapter:C$channelNum:T$targetNum:L$lunNum";
+         if ($pname =~ /\-$/) {
+            $pname2 = $pname . ' ';
+         }
+         @tokens = split('-', $pname2);
+         my $atran = $tokens[0];
+         my $ttran = $tokens[1];
+         my $deviceName = $tokens[-1];
+         my $displayName = getDeviceDisplayName($ss, $deviceName);
+         my $pathKey = $p->key;
+         my $pluginName = $pluginNames{$pathKey};
+         # bug 420476, 420475
+         if (!defined $pluginName) {
+             $pluginName = "(unclaimed)";
+         }
+         my $pathState = '';
+         #my $adapterType = $ids[0]; 
+         #$adapterType =~ /(\S+)\./;
+         #$adapterType = $1;
+         #if (lc($adapterType) eq 'unknown') {
+         my $adapterType = ref($hba);
+         $adapterType =~ /Host(.*)Hba/;
+         $adapterType = $1;
+         if ($adapterType =~ /parallel/i) {
+            $adapterType = 'parallel';
+         } elsif ($adapterType =~ /block/i) {
+            $adapterType = $ids[0]; 
+            $adapterType =~ /(\S+)\./;
+            $adapterType = $1;
+         } elsif ($adapterType =~ /^internetscsi$/i) {
+            $adapterType = 'iscsi';
+         } elsif ($adapterType =~ /^fibrechannel$/i) {
+            $adapterType = 'fc';
+         }
+         my $adapterName = $ids[0];
+         if ($adapterType =~ /internetscsi|iscsi/i) {
+            $adapterName = getIScsiName($ss, $adapter);
+         }
+         my $targetName = $ids[1];
+         my $targetID = '';
+         if ($adapterType =~ /internetscsi|iscsi/i) {
+            my @tks = split(',', $pname);
+            my @tks2 = split('-', $tks[0]);
+            my $session = $tks2[-1];
+            my $portalTag = $tks[-1];
+            $portalTag =~ /(\d+)\-/;
+            $portalTag = $1;
+            $targetID = getIScsiName($ss, $adapter, $pname);
+            $targetName = "$session,$targetID,t,$portalTag";
+            $targetID = "IQN=$targetID Alias= Session=$session " . 
+                            "PortalTag=$portalTag";
+         }
+         foreach my $s (@$pathStatesInfo) {
+            if ($s->name eq $pname) {
+               $pathState = $s->pathState;
+               # bug 372161
+               if($pathState eq "disabled") {
+                  $pathState = "off";
+               }
+               last;
+            }
+         }
+         $atran =~ /[\S]+.([\S]{16}):([\S]{16})/;
+         my $awwpn = $2;
+         my $awwnn = $1;
+         $ttran =~ /[\S]+.([\S]{16}):([\S]{16})/;
+         my $twwpn = $2;
+         my $twwnn = $1;
+         if ($option eq 'detail') {
+            if ((!$path && !$device) ||    # no path, no device
+                (!$device && $path && (($path eq $pname) ||
+                                       ($path eq $runtimeName))) || #--path
+                (!$path && $device && ($device eq $deviceName)) || #--device
+                ($device && ($device eq $deviceName) &&
+                $path && (($path eq $pname) || ($path eq $runtimeName)))) {
+                                           # --path --device
+               print "$pname\n";
+               print "   Runtime Name: $runtimeName\n";
+               print "   Device: $deviceName\n";
+               print "   Device Display Name: $displayName\n";
+               print "   Adapter: $adapter" .
+                       " Channel: $channelNum" .
+                        " Target: $targetNum" .
+                           " LUN: $lunNum\n";
+               print "   Adapter Identifier: $adapterName\n";
+               print "   Target Identifier: $targetName\n";
+               print "   Plugin: $pluginName\n";
+               print "   State: $pathState\n";
+               print "   Transport: $adapterType\n"; 
+               if ($adapterType =~ /fibrechannel|fc/i) {
+                  print "   Adapter Transport Details: WWPN: " .
+                      process($awwpn) . " WWNN: " . process($awwnn) . "\n";
+                  print "   Target Transport Details: WWPN: " .
+                      process($twwpn) . " WWNN: " . process($twwnn) . "\n";
+               }
+               if ($adapterType =~ /internetscsi|iscsi/i) {
+                  print "   Adapter Transport Details: $adapterName\n";
+                  print "   Target Transport Details: $targetID\n";
+               }           
+               print "\n";
+            }
+         } elsif ($option eq 'compact') {
+            if ((!$path && !$device) ||
+                (!$device && $path && (($path eq $pname) ||
+                                       ($path eq $runtimeName))) ||
+                (!$path && $device && ($device eq $deviceName)) ||
+                ($device && ($device eq $deviceName) &&
+                $path && (($path eq $pname) || ($path eq $runtimeName)))) {
+               print "$runtimeName state:$pathState $deviceName $adapter " .
+                  "$channelNum $targetNum $lunNum $pluginName $pathState " .
+                  "$adapterName $targetName\n";
+            }
+         } elsif ($option eq 'map') {
+            if ((!$path && !$device) ||
+                (!$device && $path && (($path eq $pname) ||
+                                       ($path eq $runtimeName))) ||
+                (!$path && $device && ($device eq $deviceName)) ||
+                ($device && ($device eq $deviceName) &&
+                $path && (($path eq $pname) || ($path eq $runtimeName)))) {
+               print "$runtimeName $adapter $adapterName $targetName $deviceName\n";
+            }
+         } elsif ($option eq 'paths') {
+            next unless defined($p->device);
+            if ((!$device && !$path) ||
+                ($device && ($device eq $deviceName)) ||
+                ($path && (($path eq $pname) || ($path eq $runtimeName)))) {
+               $deviceName = "$deviceName : $displayName";
+               my $pinfo = "Local HBA $adapter channel $channelNum target " .
+                           "$targetNum";
+               # bug 415759
+               if ($adapterType eq 'sas') {
+                  my @sas = split('\.',$ids[0]);
+                  $pinfo = "sas Adapter: $sas[1] channel $channelNum Target: " .
+                              "$target[4]";
+               }
+               if ($adapterType =~ /fibrechannel|fc/i) {
+                  $pinfo = "fc Adapter WWNN: " . process($awwnn) . " WWPN: " .
+                                                 process ($awwpn) .
+                             "  Target WWNN: " . process($twwnn) . " WWPN: " .
+                                                 process ($twwpn);
+               } elsif ($adapterType =~ /internetscsi|iscsi/i) {
+                  $pinfo = "iscsi Adapter: $adapterName  Target: $targetID";
+               }
+               $devices{$deviceName} = $devices{$deviceName} || "\n";
+               $devices{$deviceName} = $devices{$deviceName} . 
+                     "   $runtimeName LUN:$lunNum state:$pathState  $pinfo\n";
+            }
+         }
+      }
+      if ($option eq 'paths') {
+         foreach my $key (keys %devices) {
+            print "$key";
+            print $devices{$key} . "\n";
+         }
+      }
+   }
+}
+
+sub list_plugins {
+   my ($ss) = @_;
+   my $plugins = getPlugins($ss);
+   if ($plugins) {
+      foreach my $p (@$plugins){
+         print $p->name . "\n";
+      }
+   }
+}
+
+sub set_state {
+   my ($ss, $path, $state) = @_;
+   my $pathName = undef;
+   if ($path =~ /(vmhba[\d]{1,}):C([\d]{1,}):T([\d]{1,}):L([\d]{1,})/) {
+      $pathName = getPathByRuntimeName($ss, $1, $2, $3, $4);
+      if (!$pathName) {
+         VIExt::fail("Unable to find path with runtime name $path"); 
+      }
+   } else {
+      $pathName = $path;
+   }
+
+   if ($state eq "active") {
+      eval { $ss->EnableMultipathPath(pathName => $pathName); };
+      if ($@) {
+         VIExt::fail("Unable to enable path: " . ($@->fault_string));
+      }
+   } elsif ($state eq "off") {
+      eval { $ss->DisableMultipathPath(pathName => $pathName); };
+      if ($@) {
+         VIExt::fail("Unable to disable path $pathName : " . 
+                      ($@->fault_string));
+      }
+   } else {
+      VIExt::fail("Unknown state specified");
+   }
+   printf("Setting %s state to %s\n", $path, $state);
+}
+
+sub process {
+   my ($str)  = @_;
+   my @str = split //, $str;
+   my $i = 0;
+   my $newStr = '';
+   foreach my $c (@str) {
+      if ($i%2 == 0 && $i gt 1) {
+         $newStr = $newStr . ':';
+      }
+      $newStr = $newStr . $c;
+      $i++;
+   }
+   return $newStr;
+}
+
+sub getPlugStoreTopology {
+   my ($ss) = @_;
+   return $ss->storageDeviceInfo->plugStoreTopology;
+}
+
+sub getPlugins {
+   my ($ss) = @_;
+   my $pst = getPlugStoreTopology($ss);
+   if ($pst) {
+      return $pst->plugin;
+   }
+}
+
+sub getPluginNames {
+   my ($plugins) = @_;
+   my %pluginNames = ();
+   if ($plugins) {
+      foreach my $plugin (@$plugins) {
+         my $claimPaths = $plugin->claimedPath;
+         my $pluginName = $plugin->name;
+         if ($claimPaths) {
+            foreach my $claimPath (@$claimPaths) {
+               $pluginNames{$claimPath} = $pluginName;
+            }
+         }
+      }
+   }
+   return %pluginNames;
+}
+
+sub getPathByRuntimeName {
+   my ($ss, $adapter, $channel, $target, $lun) = @_;
+   my $pathName = undef;
+   my $pst = getPlugStoreTopology($ss);
+   if ($pst) {
+      my $paths = $pst->path;
+      foreach $path (@$paths) {
+         if ($path->adapter =~ /$adapter/ &&
+             $path->channelNumber eq $channel &&
+             $path->targetNumber eq $target &&
+             $path->lunNumber eq $lun) {
+             $pathName = $path->name;
+            last;
+         }
+      }
+   }
+   return $pathName;
+}
+
+sub getIScsiName {
+   my ($ss, $adapter, $pname) = @_;
+   my $adapters = $ss->storageDeviceInfo->hostBusAdapter;
+   my $iScsiName = '';
+   foreach my $a (@$adapters) {
+      if ($a->isa('HostInternetScsiHba') && $a->device eq $adapter) {
+         if ($pname) {
+            my $staticTargets = $a->configuredStaticTarget;
+            if (defined($staticTargets)) {
+               foreach my $staticTarget (@$staticTargets) {
+                   $iScsiName = $staticTarget->iScsiName;
+                   if ($pname =~ /$iScsiName/) {
+                      return $iScsiName;
+                   }
+               }
+            }
+         } else {
+            $iScsiName = $a->iScsiName;
+         }
+      }
+   } 
+   return $iScsiName;
+}
+
+sub getDeviceDisplayName {
+   my ($ss, $deviceName) = @_;
+   my $scsiLuns = $ss->storageDeviceInfo->scsiLun;
+   my $displayName = '';
+   foreach my $scsiLun (@$scsiLuns) {
+      if ($scsiLun->canonicalName eq $deviceName) {
+         $displayName = $scsiLun->displayName;
+      }
+   }
+   return $displayName;
+}
+
+__END__
+
+
+=head1 NAME
+
+vicfg-mpath - display path information, change path state
+
+
+=head1 SYNOPSIS
+
+ vicfg-mpath [<conn_options>]  
+   [--help |
+    --list [--path <path> |--device <device>] |
+    --list-compact [--path <path> |--device <device>] |
+    --list-map [--path <path> |--device <device>] |
+    --list-paths [--device <device>] |
+    --list-plugins | 
+    --state  [active|off] ]
+ 
+
+
+=head1 DESCRIPTION
+
+The vicfg-mpath command supports listing information about Fibre Channel or iSCSI LUNs and changing a path's state. Use vicfg-mpath35 when running
+against ESX/ESXi 3.5 systems. 
+Use the esxcli command for managing pluggable storage architecture (PSA) and native multipathing (NMP), including path policy modification. 
+
+
+=head1 OPTIONS
+
+
+=over
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-mpath --help>
+for a list of all connection options.
+
+=item B<--device | -d>
+
+Used to filter the list commands to display only information about the specified
+device.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--list | -l E<lt>path_or_deviceE<gt>>
+
+Lists detailed information for all paths on the system or for the specified path or device.
+
+
+=item B<--list-compact | -L E<lt>path_or_deviceE<gt>>
+
+Lists all paths with abbreviated information.
+
+
+=item B<--list-map | -m E<lt>path_or_deviceE<gt>>
+
+Lists all paths and the corresponding adapter and device mappings.
+
+
+=item B<--list-paths | -b E<lt>deviceE<gt>>
+
+Lists all devices with their corresponding paths, or lists paths for the specified device.
+
+
+=item B<--list-plugins | -G>
+
+Lists all multipathing plugins loaded into the system. At a minimum, this command returns NMP (Native Multipathing Plugin). 
+If other MPP plugins have been loaded, they are listed as well. 
+For information about storage array plugins, see the I<ESX Configuration Guide> and the I<ESXi Configuration Guide>. You manage plugins 
+with the esxcli command; run C<esxcli --help> to get started and see the I<vSphere Command-Line Interface Installation and
+Scripting Guide> for more information. 
+
+=item B<--path | -P>
+
+Used to specify a specific path for operations. The path name
+may be either the long path UID or the shorter runtime name of the path.
+Use this option to filter any of the list commands to a specific path.
+
+=item B<--state|-s active|off>
+
+Sets the state of a given LUN path to either active or off. 
+This option requires that the --path options is set and specifies either the path UID or the path runtime name.
+
+If you are changing a path's state, the change operation fails if I/O is active when the path setting is changed. Reissue the command. 
+You must issue at least one I/O operation before the change takes effect. 
+
+=item B<--vihost | -h>
+
+When you run a vCLI command with the C<--server> option pointing to a 
+vCenter Server system, use C<--vihost> to specify the ESX/ESXi host to run the command against. 
+
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options. 
+Run C<vicfg-mpath --help> for a list of common options including connection options. 
+
+
+List all paths on the system with their detailed information:
+
+    vicfg-mpath <conn_options> -l
+
+List detailed information for the specified path:
+
+    vicfg-mpath <conn_options> -l -P ide.vmhba32-ide.0:1-mpx.vmhba32:C0:T1:L0
+
+List a path by specifying its runtime name with its detailed information:
+
+    vicfg-mpath <conn_options> -l -P vmhba32:C0:T1:L0
+
+List paths with its detailed information for a specific device:
+
+    vicfg-mpath <conn_options> -l -d mpx.vmhba32:C0:T1:L0
+
+List all paths with abbreviated information:
+
+    vicfg-mpath <conn_options> -L
+
+List all paths with adapter and device mappings:
+
+    vicfg-mpath <conn_options> -m
+
+List all devices with their corresponding paths:
+
+    vicfg-mpath <conn_options> -b
+
+List all multipathing plugins loaded into the system:
+
+    vicfg-mpath -G
+
+Set the state for a specific path to off. Requires the --path option. 
+
+    vicfg-mpath <conn_options> --state off --path <path name>
+
+If you are changing a path's state, the change operation fails if I/O is active when the path setting is changed. Reissue the command. 
+You must issue at least one I/O operation before the change takes effect.
+
+=cut

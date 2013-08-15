@@ -1,0 +1,325 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my $MAINTENANCE_MODE_TIMEOUT_SECS = 15;
+
+my %opts = (
+   'save' => {
+      alias => "s",
+      type => "",
+      help => qq!  Backup the host configuration.!,
+      required => 0,
+   },
+   'load' => {
+      alias => "l",
+      type => "",
+      help => qq!  Restore configuration onto the host!,
+      required => 0,
+   },
+   'force' => {
+      alias => "f",
+      type => "",
+      help => qq!  Force the restore of the configuration.!,
+      required => 0,
+   },
+   'reset' => {
+      alias => "r",
+      type => "",
+      help => qq!  Resets host, restore to factory settings.!,
+      required => 0,
+   },
+   'quiet' => {
+      alias => "q",
+      type => "",
+      help => qq!  Do not prompt for user confirmation.!,
+      required => 0,
+   },
+   '_default_' => {
+      argval => "backupfile",
+      type => "=s",
+      help => qq!  The backup configuration file to save to or restore from.!,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $backupfile = Opts::get_option('_default_');
+my $save = Opts::get_option('save');
+my $load = Opts::get_option('load');
+my $force = Opts::get_option('force');
+my $reset = Opts::get_option('reset');
+my $quiet = Opts::get_option('quiet');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['configManager.firmwareSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+my $fwref = $host_view->{'configManager.firmwareSystem'};
+
+unless (defined($fwref)) {
+   VIExt::fail("Operation not supported on this host.");
+}
+
+my $fwsys = Vim::get_view(mo_ref => $fwref);
+unless (defined($fwsys)) {
+   VIExt::fail("Operation not supported on this host.");
+}
+
+if (defined($reset)) {
+   if (request_confirm("The reset operation will reboot the host.")) {
+      if (!is_in_maintenance_mode($host_view)) {
+         print "Entering maintenance mode ...\n";
+         enter_maintenance_mode($host_view);
+      }
+      unless (restore_to_defaults($fwsys)) {
+         exit_maintenance_mode($host_view);
+      }
+   }
+} elsif (defined($save)) {
+   Opts::assert_usage(defined($backupfile), 
+                      "a backup file name must be specified when saving.");
+   save($fwsys, $backupfile);
+} elsif (defined($load)) {
+   Opts::assert_usage(defined($backupfile), 
+                      "a backup file name must be specified when loading.");
+   $force = 0 unless defined($force);
+   load($host_view, $fwsys, $backupfile, $force);
+}
+
+Util::disconnect();
+
+sub request_confirm {
+   my $msg = shift;
+   
+   return 1 if defined($quiet);
+
+   print "$msg\nType 'yes' to continue:\n";
+   my $input = scalar(<STDIN>);
+   chop($input);
+   if ($input =~ /yes/i) {
+      return 1;
+   }
+   print "operation skipped.\n";
+   return 0;
+}
+
+sub get_upload_location {
+   my ($fwsys) = @_;
+   my $url = $fwsys->QueryFirmwareConfigUploadURL();
+   my $tmp_path = undef;
+   if ($url =~ m@http.*//\*//?tmp/(.*)@) {
+      $tmp_path = $1;
+   }
+   return ($url, $tmp_path);
+}
+
+sub get_download_location {
+   my ($fwsys) = @_;
+   my $url = $fwsys->QueryFirmwareConfigUploadURL();
+   my $tmp_path = undef;
+   if ($url =~ m@http.*//\*//?(.*)@) {
+      $tmp_path = $1;
+   }
+   return ($url, $tmp_path);
+}
+
+sub is_in_maintenance_mode {
+   my ($host) = @_;
+
+   if (defined($host->{runtime}) && $host->{runtime}->{inMaintenanceMode}) {
+      return 1;
+   }
+   return 0;
+}
+
+sub enter_maintenance_mode {
+   my ($host) = @_;
+   eval { $host->EnterMaintenanceMode(timeout => $MAINTENANCE_MODE_TIMEOUT_SECS); };
+   if ($@) {
+      VIExt::fail("Unable to enter maintenance mode: " .  ($@->fault_string) . 
+         ". Please ensure no virtual machines are running on the " . 
+         "host and retry the operation again.");
+   }
+}
+
+sub exit_maintenance_mode {
+   my ($host) = @_;
+   print "Exiting maintenance mode ...\n";
+   eval { $host->ExitMaintenanceMode(timeout => $MAINTENANCE_MODE_TIMEOUT_SECS); };
+   if ($@) {
+      VIExt::fail("Unable to exit maintenance mode: " .  ($@->fault_string));
+   }
+}
+
+sub restore_to_defaults {
+   my ($fwsys) = @_;
+
+   eval { $fwsys->ResetFirmwareToFactoryDefaults(); };
+   if ($@) {
+      VIExt::fail("Reset to factory defaults failed: " . ($@->fault_string));
+      return 0;
+   }
+}
+
+sub load {
+   my ($host_view, $fwsys, $file, $force) = @_;
+
+   unless (-e $file) {
+      VIExt::fail("Config bundle $file not found\n. Operation failed.");
+      return 0;
+   }
+
+   if (request_confirm("The restore operation will reboot the host.")) {
+
+      my ($url, $remote_tmp_path) = get_upload_location($fwsys);
+      if (defined($remote_tmp_path)) {
+         print "Uploading config bundle to $remote_tmp_path ...\n";
+
+         # Certain combinations of perl/lwp will construct 
+         # corrupted HTTP PUT requests when binary content
+         # and utf8-tagged URL are involved.
+         #
+         # Downgrading the utf8 url string returned in
+         # the SOAP response works around the problem.
+         utf8::downgrade($remote_tmp_path);
+
+         VIExt::http_put_tmp_file($file, $remote_tmp_path);
+
+         if (!is_in_maintenance_mode($host_view)) {
+            enter_maintenance_mode($host_view);
+         }
+
+         print "Performing restore ...\n";
+         eval { $fwsys->RestoreFirmwareConfiguration(force => $force); };
+         if ($@) {
+            print STDERR "Restore failed: " . ($@->fault_string) . "\n";
+            exit_maintenance_mode($host_view);
+         }
+      } else {
+         VIExt::fail("Operation failed. Unexpected upload URL format: $url");
+      }
+   }
+}
+
+sub save {
+   my ($fwsys, $file) = @_;
+
+   my $downloadUrl;
+   eval { $downloadUrl = $fwsys->BackupFirmwareConfiguration(); };
+   if ($@) {
+      VIExt::fail("Restore failed: " . ($@->fault_string) . "\n");
+   }
+   print "Saving firmware configuration to $file ...\n";
+   if ($downloadUrl =~ m@http.*//\*//?(.*)@) {
+      my $docrootPath = $1;
+      unless (defined($file)) {
+         # strips off all the directory parts of the url
+         ($file = $docrootPath) =~ s/.*\///g
+      }
+      VIExt::http_get_file("docroot", $docrootPath, undef, undef, $file);
+   } else {
+      VIExt::fail("Unexpected download URL format: $downloadUrl");
+   }
+}
+
+__END__
+
+=head1 NAME
+
+vicfg-cfgbackup - back up and restore ESXi host configurations
+
+=head1 SYNOPSIS
+
+ vicfg-cfgbackup 
+    <conn_options>
+    [--force | 
+     --help |
+     --load <backupfile> |
+     --reset |
+     --save <backupfile>]
+
+=head1 DESCRIPTION
+
+The vicfg-cfgbackup command backs up ESXi configuration data and restores them later. You can 
+back up the host configuration, restore the configuration to the host, force the restore of 
+the configuration, and reset the host to factory settings.
+
+Back up ESXi host configuration before you change the configuration or upgrade the ESXi image.
+The I<vSphere Upgrade Guide> discusses backing up and restoring the ESXi configuration in some detail. 
+
+B<Important>: This command is supported for ESXi hosts but not for ESX hosts. 
+
+=head1 OPTIONS
+
+=over
+
+=item B<conn_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-cfgbackup --help>
+for a list of all connection options.
+
+=item B<--force | -f>
+
+Forces the restore of the configuration.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--load | -l E<lt>backupfileE<gt>>
+
+Restores configuration from <backupfile> onto the host.
+
+=item B<--save | -s E<lt>backupfileE<gt>>
+
+Backs up the host configuration. 
+
+Include the number of the build that is running on the host that you are backing up in the backup filename. 
+If you are running the vSphere CLI from vMA, the backup file is saved locally on vMA. Local storage for backup files 
+is safe because vMA is stored in the /vmfs/volumes/<datastore> directory, 
+which is separate from the ESXi image and configuration files.
+
+=item B< --reset | -r>
+
+Resets the host to factory settings.
+
+=item B<--quiet | -q>
+
+Performs all operations without prompting for confirmation.
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-cfgbackup --help> for a list of common options including connection options. 
+
+Back up the host configuration to the file C:\backup.txt:
+
+ vicfg-cfgbackup <conn_options> -s C:\backup.txt
+
+Reset the host, that is, restore to factory settings:
+
+ vicfg-cfgbackup <conn_options> -r
+
+Restore a configuration previously saved to C:\backup.txt to the host:
+
+ vicfg-cfgbackup <conn_options> -l C:\backup.txt
+
+Restore a configuration from C:\backup.txt without prompting for user confirmation:
+
+ vicfg-cfgbackup <conn_options> -l C:\backup.txt -q
+
+=cut

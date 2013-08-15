@@ -1,0 +1,4 @@
+-figure out why installer fails when capturing Perl Dependencies
+	toggle "AutoReq:" in .spec
+		1 = find dependencies
+		0 = do not find dependencies

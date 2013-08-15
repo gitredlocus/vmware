@@ -1,0 +1,452 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+#
+# vicfg-dumppart - VMware ESX Server diagnostic partition configuration tool
+# 
+# SYNOPSIS
+#      vicfg-dumppart  OPTIONS
+# 
+# DESCRIPTION
+#      vicfg-dumppart provides an interface to query, set, and scan for 
+#      diagnostic partitions on an ESX Server.
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!
+        The host to use when connecting via a vCenter Server.
+      !,
+      required => 0,
+   },
+   list => {
+      alias => "l",
+      type => "",
+      help => qq!
+        List all partitions on the system that have the appropriate 
+        partition type to act as an ESX Server diagnostic partition.  
+        WARNING: Listing will scan all LUNs on a system and may 
+        degrade system performance.
+      !,
+      required => 0,
+   },
+   'get-active' => {
+      alias => "t",
+      type => "",
+      help => qq!
+        Get the active diagnostic partition for this system.  This
+        option returns the device identifier for the partition (naa.xxxxx:1)
+        or 'none' when no partition is set.
+      !,
+      required => 0,
+   },
+   'get-config' => {
+      alias => "c",
+      type => "",
+      help => qq!
+        Get the configured diagnostic partition for the system.  This
+        partition may or may not be the active partition.  In a SAN
+        situation this partition may have disappeared.
+      !,
+      required => 0,
+   },
+   'set' => {
+      alias => "s",
+      type => "",
+      help => qq!
+        Set the diagnostic partition for this system and activate it, 
+        either naa.xxxxx:1 or 'none' to deactivate the active diagnostic 
+        partition.
+      !,
+      required => 0,
+   },
+   'find' => {
+      alias => "f",
+      type => "",
+      help => qq!
+        Using the same method as the list option, find all the diagnostic
+        partitions on this ESX Server.  Based on the type of storage,
+        print the partitions in order of their desirability to be used as
+        a diagnostic partition.  The order of priority for diagnostic
+        partitions is Parallel adapter, block adapter, USB, Fibre Channel,
+        Hardware iSCSI.
+      !,
+      required => 0,
+   },
+   'smart-activate' => {
+      alias => "S",
+      type => "",
+      help => qq!
+        Activate the diagnostic partition if one is set and available.
+        This operation is currently not supported.
+      !,
+      required => 0,
+   },
+   'activate' => {
+      alias => "a",
+      type => "",
+      help => qq!
+        Activate the configured diagnostic partition.
+      !,
+      required => 0,
+   },
+   'deactivate' => {
+      alias => "d",
+      type => "",
+      help => qq!
+        Deactivate the current active diagnostic partition. WARNING: this
+        will leave your system without any means of reporting errors
+        until another partition is activated.
+      !,
+      required => 0,
+   },
+   _default_ => {
+      type => "=s",
+      argval => "partition",
+      help => "The partition name",
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $partition = Opts::get_option('_default_');
+my $list = Opts::get_option('list');
+my $getactive = Opts::get_option('get-active');
+my $getconfig = Opts::get_option('get-config');
+my $deactivate = Opts::get_option('deactivate');
+my $find = Opts::get_option('find');
+my $set = Opts::get_option('set');
+
+my $activate = Opts::get_option('activate');
+my $smartactivate = Opts::get_option('smart-activate');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['config.storageDevice.scsiLun', 'configManager.diagnosticSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+my $diagnostic_system = 
+   Vim::get_view (mo_ref => $host_view->{'configManager.diagnosticSystem'});
+
+#
+# cycle through various operations
+#
+if (defined $list) {
+   list($diagnostic_system);
+} elsif (defined $find) {
+   find($diagnostic_system);
+} elsif (defined $getactive) {
+   getactive($diagnostic_system);
+} elsif (defined $getconfig) {
+   # bug 416730
+   list($diagnostic_system);
+} elsif (defined $set) {
+   # bug 375304
+   Opts::assert_usage(defined($partition), "Must specify partition.");
+   if($partition eq 'none') {
+      unset($diagnostic_system);
+   }
+   else {   
+      set($diagnostic_system, $partition, "set");
+   }
+} elsif (defined $smartactivate) {
+   print STDERR "Smart activate is currently not supported.\n"; 
+} elsif (defined $activate) {
+   Opts::assert_usage(defined($partition), "Must specify partition.");
+   set($diagnostic_system, $partition, "activated");
+} elsif (defined $deactivate) {
+   unset($diagnostic_system);
+} else {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+
+sub get_available_partitions
+{
+   my ($ds) = @_;
+   my $parts;
+   eval { $parts = $ds->QueryAvailablePartition(); };
+   if ($@) {
+      VIExt::fail("Unable to obtain available partitions: " . 
+      ($@->fault_string));
+   }
+   return $parts;
+}
+
+sub get_device_name
+{
+   my ($diskName) = @_;
+   my $luns = $host_view->{'config.storageDevice.scsiLun'};
+   my $deviceName = $diskName;
+   foreach (@$luns) {
+      if ($_->isa('HostScsiDisk')) {
+         if ($diskName eq $_->canonicalName) {
+            $deviceName =  $_->deviceName;
+            last;
+         }
+      }
+   }
+   return $deviceName;
+}
+
+sub list {
+   my ($ds) = @_;
+   my $parts = get_available_partitions($ds);
+   my $active = get_active_partition($ds);
+   my @diskids = ();
+   my @deviceNames = ();
+   my @isActives = ();
+   foreach my $part (@$parts) {
+      my $isActive = 'no';
+      my $diskid = $part->id->diskName;
+      push (@diskids, $diskid . ":" . $part->id->partition);
+
+      my $deviceName = get_device_name($diskid);
+      push (@deviceNames, $deviceName. ":" . $part->id->partition);
+
+      if ($active && $active eq "$diskid:" . $part->id->partition) {
+         $isActive = 'yes';
+      }
+      push (@isActives, $isActive);
+   }
+
+   # bug 35955
+   my $size = @$parts;
+   if (defined $parts && $size > 0) {
+      # calculate string length
+      my $diskid_length = getLength(\@diskids) + 3;
+      my $deviceName_length = getLength(\@deviceNames) + 3;
+
+      # output
+      printf '%-' . $diskid_length . 's', "VM Kernel Name";
+      printf '%-' . $deviceName_length . 's', "Console Name";
+      printf  '%-10s', "Is Active";
+      print "\n";
+
+      my $i = 0;
+      foreach (@diskids) {
+         printf '%-' . $diskid_length . 's', $diskids[$i];
+         printf '%-' . $deviceName_length . 's', $deviceNames[$i];
+         printf  '%-10s', $isActives[$i];
+         print "\n";
+         $i++;
+      }
+   }
+   else {
+      printf '%- ' . 0 . 's', "VM Kernel Name";
+      printf '%- ' . 0 . 's', "   Console Name";
+      printf  '%-10s', "   Is Active";
+      print "\n";
+   }
+}
+
+sub find {
+   my ($ds) = @_;
+   my $parts = get_available_partitions($ds);
+
+   foreach my $part (@$parts) {
+      my $diskid = $part->id->diskName;
+      my $deviceName = get_device_name($diskid);
+      print "Partition name $diskid:" . $part->id->partition . " -> " .
+            $deviceName . ":" . $part->id->partition . "\n";
+   }
+}
+
+sub get_active_partition {
+   my ($ds) = @_;
+   my $active = $ds->activePartition;
+   my $apart = undef;
+   if ($active) {
+      $apart = $active->id->diskName . ":" . $active->id->partition;
+   }
+   return $apart;
+}
+
+sub getactive {
+   my ($ds) = @_;
+   my $active = 'none';
+   my $part = get_active_partition($ds);
+   if (defined $part) {
+      if ($part =~ /([.\w\W\d\D]+):(\d+)/) {
+         my $partid = $2;
+         my $device = get_device_name($1);
+         $active = $part . "    $device:$partid";
+      }
+   }
+   print "$active\n";
+}
+
+sub set {
+   my ($ds, $partitionName, $type) = @_;
+   my $parts = get_available_partitions($ds);
+   my $found = 0;
+   foreach my $part (@$parts) {
+      if ($part->id->diskName.":".$part->id->partition eq $partitionName) {
+         $found = $found || 1;
+         eval { $ds->SelectActivePartition(partition => $part->id); };
+         if ($@) {
+            VIExt::fail("Unable to set partition: " . ($@->fault_string));
+         }
+         print "Dump partition $type.\n";
+      }
+   }
+   if (!$found) {
+      VIExt::fail("Invalid diagnostic partition: $partitionName");
+   }
+}
+
+sub unset {
+   my ($ds) = @_;
+   eval { $ds->SelectActivePartition(partition => undef); };
+   if ($@) {
+      VIExt::fail("Unable to unset partition: " . ($@->fault_string));
+   }
+   # defect 170746
+   print "Dump Partition Deactivated \n";
+}
+
+sub getLength {
+   my ($array) = @_;
+   my $i = 0;
+   my $len = length($$array[0]);
+   my $size = @$array;
+   while ($i < $size) {
+      $len = getMaxLength($len, length($$array[$i]));
+      $i++;
+   }
+   return $len;
+}
+
+sub getMaxLength {
+   my ($a, $b) = @_;
+   return ($a < $b)? $b : $a;
+}
+
+
+__END__
+
+=head1 NAME
+
+vicfg-dumppart - query, set, and scan for diagnostic partitions on an ESX/ESXi system
+
+=head1 SYNOPSIS
+
+ vicfg-dumppart [<conn_options>]
+    [--activate <partition> |
+     --deactivate <partition> |
+     --find |
+     --get-active |
+     --get-config |
+     --help |
+     --list |
+     --set <partition> |
+     --smart-activate |
+     --vihost]
+
+=head1 DESCRIPTION
+
+The vicfg-dumppart command queries, sets, and scans an ESX/ESXi host's diagnostic partitions. 
+The ESX Configuration Guide and the ESXi Configuration Guide discuss diagnostic partitions in detail and explain how 
+to create a diagnostic partition using the vSphere Client UI. 
+
+=head1 OPTIONS
+
+=over
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-dumppart> --help
+for a list of all connection options.
+
+=item B<--activate | -a E<lt>partitionE<gt>> 
+
+Makes the specified partition the current diagnostic partition. 
+This option has the same effect as C<--set>.
+
+=item B<--deactivate | -d E<lt>partitionE<gt>>
+
+Deactivates the active diagnostic partition. 
+Specifying the name of the partition is optional. 
+B<WARNING>: If you run vicfg-dumppart with this option, your system cannot write errors to a file until 
+another partition is activated. You lose any error record if errors occur. 
+
+=item B<--find | -f>
+
+Finds all diagnostic partitions on the ESX/ESXi host and prints them. The partitions can include, 
+in order of suitability, parallel adapter, block adapter, Fibre Channel, and hardware iSCSI.
+
+=item B<--get-active | -t>
+
+Displays the active diagnostic partition for this system. Running vicfg-dumppart with 
+this option returns the internal name of the partition (naa.xxxxx:1) or 'none' if no partition is set.
+
+=item B<--get-config | -c>
+
+Lists all configured partitions on the system.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--list | -l>
+
+Lists all partitions on the ESX/ESXi system that have the appropriate partition type to act as 
+a diagnostic partition. 
+B<CAUTION>: Execution might take several minutes and slow down your ESX/ESXi host because the command scans all LUNs on the system. 
+
+=item B<--set | -s E<lt>partitionE<gt>>
+
+Sets and activates the diagnostic partition, which you must specify using naa.xxx:1 or eui.xxx syntax. 
+Specify C<none> to deactivate the active diagnostic partition.
+
+=item B<--smart-activate | -S>
+
+This option is currently not supported.
+
+=item B<--vihost | -h >
+
+When you run a vCLI command with  C<--server> pointing to a 
+vCenter Server system, use C<--vihost> to specify the ESX/ESXi host to run the command against. 
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-dumppart --help> for a list of common options including connection options.
+
+List the partitions available for diagnostic partitions:
+B<WARNING>: This call scans all LUNs on the system and might degrade system
+performance:
+
+   vicfg-dumppart <conn_options> -l
+
+Get the active diagnostic partition for this system. Return the internal name
+of the partition:
+
+   vicfg-dumppart <conn_options> -t
+
+Set the diagnostic partition for this system and activate it: 
+
+   vicfg-dumppart <conn_options> -s naa.xxxxx:1
+
+Deactivate the active diagnostic partition:
+B<WARNING>: Deactivating the diagnostic partition leaves your system without any 
+means of reporting errors until another partition is activated.
+
+   vicfg-dumppart <conn_options> -d

@@ -1,0 +1,972 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+use VMware::VIM25Runtime;
+use VMware::VILib;
+
+# The number of times ro try any given query in the interactive variant.
+my $max_tries = 3;
+
+# Whether this script is being run in interactive mode or not.
+# Useful throughout the script, so I made it a 'global' variable.
+my $is_interactive;
+
+# Isolate the strings that the user sees here.  Then they can be easily changed on demand.
+#
+# Does not include some very verbose (level 2 and above) logging strings.
+# Does not include formatting decisions with respect to number of newlines (those are baked into the code).
+# Does not include the progress bar display logic (inside relocate_and_track_progress()). 
+# Does not include the main documentation (which is at the end of the script).
+#
+# Fixed strings are just string literals.
+# Strings which need arguments to construct use function pointers to a function that returns a string.
+
+# usage strings
+my $datacenter_usage_str = "The name of the datacenter.";
+my $vm_usage_str = "The path to the VM's config file, then the name of the destination datastore separated by a colon.";
+my $disk_usage_str = "The path to one of the VM's disks, then the name of the destination datastore separated by a colon.  Repeat as needed, separated by commas.";
+my $usage_usage_str = "Prints basic usage information for the non-interactive version.";
+
+# control flow strings
+my $enter_interactive_mode_str = "Entering interactive mode.  All other options and environment variables will be ignored.";
+my $enter_non_interactive_mod_str = "Running in non-interactive mode.";
+my $start_svmotion_str = "Performing Storage VMotion.";
+my $end_svmotion_str = "Storage VMotion completed successfully.";
+my $connecting_str_func = sub { my $url = shift; "Attempting to connect to $url." };
+my $connected_str = "Connected to server.";
+my $disconnecting_str = "Disconnecting.";
+my $resolving_args_str = "Resolving the input arguments.";
+
+# user prompt strings (for interactive mode only)
+my $prompt_service_url_str = "Enter the VirtualCenter service url you wish to connect to (e.g. https://myvc.mycorp.com/sdk, or just myvc.mycorp.com): ";
+my $prompt_username_str = "Enter your username: ";
+my $prompt_password_str = "Enter your password: ";
+my $prompt_datacenter_str = "Enter the name of the datacenter: ";
+my $prompt_vm_str = "Enter the datastore path of the virtual machine (e.g. [datastore1] myvm/myvm.vmx): ";
+my $prompt_disk_str = "Enter the datastore path of the disk you wish you place (e.g. [datastore1] myvm/myvm.vmdk): ";
+my $prompt_datastore_str = "Enter the name of the destination datastore: ";
+my $explain_extra_disk_arg_str = "You can also move disks independently of the virtual machine.  If you want the disks to stay with the virtual machine, then skip this step.";
+my $prompt_extra_disk_arg_str = "Would you like to individually place the disks "; # used in conjuction with $prompt_yes_or_no_str
+my $prompt_another_extra_disk_arg_str = "Would you like to place another disk "; # used in conjuction with $prompt_yes_or_no_str
+my $prompt_yes_or_no_str = "(yes/no)? ";
+my $try_again_str = "Please try again.";
+
+# error strings
+my $too_many_failures_str = "Too many failed attempts.";
+my $not_a_yes_or_no_str = "Choice must be yes or no.";
+my $login_failure_str = "Failed to login.";
+my $incorrect_argument_format_str_func = sub { my $arg = shift; "Argument to $arg is not in the correct format." };
+my $bad_vm_str_func = sub { my $path = shift; "Could not find virtual machine with config path $path in the inventory." };
+my $bad_datacenter_str_func = sub { my $dc = shift; "Could not find datacenter $dc in the inventory." };
+my $bad_datastore_str_func = sub { my $ds = shift; "Could not find datastore $ds in the inventory." };
+my $bad_disk_str_func = sub { my $path = shift; "Could not find a disk with the path $path in virtual machine." };
+my $malformed_ds_path_str_func = sub { my $dspath = shift; "Datastore path $dspath is not in the correct format." };
+my $server_error_str_func = sub { my $msg = shift; "Received an error from the server: $msg" };
+my $invalid_power_state_str = "The virtual machine must be powered-on.";
+
+# The options for the non-interactive variant.
+my %opts = (
+   datacenter => {
+      type => "=s",
+      help => $datacenter_usage_str,
+      required => 1,
+   },
+   vm => {
+      type => "=s",
+      help => $vm_usage_str,
+      required => 1,
+   },
+   disks => {
+      type => "=s",
+      help => $disk_usage_str,
+      required => 0,
+   },
+);
+
+# I18N
+my $enc = "utf8";
+
+# This function does everything.  All code beyond this point is in subroutines.
+storage_vmotion_main();
+
+###
+# The main function.
+###
+sub storage_vmotion_main {
+   eval {
+   # Check for various options manually.  Then we're not bound by VILib's various quirks (at least at 
+   # this point).
+
+   # Interactive mode trumps all other options (except help) so deal with that first.
+   $is_interactive = grep {$_ eq '--interactive'} @ARGV;
+
+   if ($is_interactive) {
+      setencoding(); # This is for workaround
+
+      print "\n";
+      print "$enter_interactive_mode_str\n\n";
+
+      interactive_login();
+
+      my ($vm_view, $relocate_spec) = 
+          interactive_parse_and_resolve_params();
+
+      print "$start_svmotion_str\n";
+      eval {
+         relocate_and_track_progress(vm_view => $vm_view, 
+                                     spec => $relocate_spec);
+      };
+      if ($@) {
+         # bug 314688
+         die &$server_error_str_func($@)."\n";
+      }
+      print "$end_svmotion_str\n\n";
+
+      print "$disconnecting_str\n";
+      Vim::logout();
+   } else {
+      Util::trace(1, "$enter_non_interactive_mod_str\n");
+
+      # So we're running the script version.  Now we leverage VILib's argument parsing capabilities. 
+      # This makes things easier, as well as makes this script similar to other VI Perl scripts. 
+      Opts::add_options(%opts);
+      Opts::parse();
+
+      Opts::validate(\&validate);
+
+      Util::trace(1, &$connecting_str_func("service url") . "\n");
+      Util::connect();
+      Util::trace(1, "$connected_str\n");  
+
+      Util::trace(1, "$resolving_args_str\n");
+      my ($vm_view, $relocate_spec) =
+         parse_and_resolve_params();
+
+      Util::trace(1, "$start_svmotion_str\n");
+      eval {
+         $vm_view->RelocateVM(spec => $relocate_spec);
+      };
+      if ($@) {
+         die &$server_error_str_func($@) . "\n";
+      }
+      Util::trace(1, "$end_svmotion_str\n\n");
+
+      Util::trace(1, "$disconnecting_str\n");
+      Util::disconnect();
+   }
+   };
+   if ($@) {
+      my @error_message = $@;
+      # Try to log out.  May throw an exception if we never logged in.  Ignore that.
+      eval {  
+         if ($is_interactive) {
+            Vim::logout();
+         } else {
+            Util::disconnect();
+         }
+      };
+      die @error_message;
+   }
+}
+
+###
+# I18N
+# This is the same logic which is implemented in VILib.pm
+# This is workaround for interactive mode since Opts::parse() can't be called in the case.
+###
+sub setencoding {
+   if ($enc eq "utf8") {
+      $enc = Opts::getencname();
+   }
+
+   if (defined($enc)) {
+      binmode(STDIN, ":encoding($enc)");
+      binmode(STDOUT, ":encoding($enc)");
+      binmode(STDERR, ":encoding($enc)");
+   }
+}
+
+###
+# Quick validation that the parameters were in the right format.
+# That they actually make sense (e.g. that the vm actually exists) will be checked later.
+###
+sub validate {
+   if (Opts::option_is_set('vm')) {
+      my @vm_args = split(/:/, Opts::get_option('vm'));
+      if (@vm_args != 2) {
+         Util::trace(0, &$incorrect_argument_format_str_func('--vm') . "\n");
+         return 0;
+      }
+   }
+
+   if (Opts::option_is_set('disks')) {
+      my @disks = split(/,/, Opts::get_option('disks'));
+
+      foreach (@disks) {
+         my @disk = split /:/;    
+         if (@disk != 2) {
+            Util::trace(0, &$incorrect_argument_format_str_func('--disks') . "\n");
+            return 0;
+         }
+      }
+   }
+
+   return 1; 
+}
+
+###
+# Promts the user for login information and logs in (interactive mode only).
+###
+sub interactive_login {
+   # Assume the user enters the correct URL.  
+   # If they don't they should just restart the script.
+   print "$prompt_service_url_str"; 
+   chomp (my $service_url = <STDIN>);
+   $service_url = trim(str => $service_url);
+
+   # If it doesn't start with "abc://" then prepend "https://"
+   if ($service_url !~ /^[A-Za-z]+:\/\//) {
+      $service_url = "https://" . $service_url;
+   }
+
+   # If it doesn't end with "abc/xyz" then append "/sdk"
+   if ($service_url !~ /[A-Za-z0-9]+\/[A-Za-z]+$/) {
+      # Might only need to append "sdk" if it already ends in a "/"
+      if ($service_url =~ /\/$/) {
+         $service_url = $service_url . "sdk";
+      } else {
+         $service_url = $service_url . "/sdk";
+      }
+   }
+
+   query_with_retries(query_func => \&query_credentials_and_login,
+                      query_args => [service_url => $service_url]);
+}
+
+###
+# Prompts the user for the parameters needed (interactive mode only).
+# Resolves those parameters into a vm view and a relocate spec.
+###
+sub interactive_parse_and_resolve_params {
+   ###
+   # Get the basic information from the user.
+   ###
+   my $datacenter_view =
+      query_with_retries(query_func => \&query_and_lookup_datacenter,
+                         query_args => []);
+
+   my $vm_view =
+      query_with_retries(query_func => \&query_and_lookup_vm,
+                         query_args => [datacenter_view => $datacenter_view]);
+
+   my $datastore_view =
+      query_with_retries(query_func => \&query_and_lookup_datastore,
+                         query_args => [datacenter_view => $datacenter_view]);
+
+   print "\n";
+
+   ##
+   # Get the optional disk placement from the user.
+   ##
+   my $disk_locators_ref =
+      interactive_parse_and_resolve_disk_params(vm_view => $vm_view,
+                                                datacenter_view => $datacenter_view);
+
+   ###
+   # Put it all together.
+   ###
+   my $relocate_spec = VirtualMachineRelocateSpec->new(datastore => $datastore_view->get_property('mo_ref'),
+                                                       disk => $disk_locators_ref);
+
+   return ($vm_view, $relocate_spec);
+}
+
+###
+# Prompts the user for any disks he would like to individually move.
+# This step is optional. 
+###
+sub interactive_parse_and_resolve_disk_params {
+   my %args = @_;
+   my $vm_view = $args{vm_view};
+   my $datacenter_view = $args{datacenter_view};
+
+   my $diskid_to_dsview;
+
+   print "$explain_extra_disk_arg_str.\n";
+
+   print "$prompt_extra_disk_arg_str";
+   my $answer = 
+      query_with_retries(query_func => \&query_yes_or_no,
+                         query_args => []);
+
+   if ($answer) {
+      while (1) {
+         my $disk_id =
+            query_with_retries(query_func => \&query_and_lookup_disk,
+                               query_args => [vm_view => $vm_view]);
+
+         my $datastore_view =
+            query_with_retries(query_func => \&query_and_lookup_datastore,
+                               query_args => [datacenter_view => $datacenter_view]);
+
+         $diskid_to_dsview->{$disk_id} = $datastore_view;
+
+         print "$prompt_another_extra_disk_arg_str";
+         $answer = 
+            query_with_retries(query_func => \&query_yes_or_no,
+                               query_args => []);
+
+         if ($answer) {
+            next;
+         } else {
+            last;
+         } 
+      }
+   }
+   print "\n";
+
+   my $disk_locators_ref = create_disk_locators(vm_view => $vm_view,
+                                                datacenter_view => $datacenter_view,
+                                                diskid_to_dsview => $diskid_to_dsview);
+}
+
+###
+# Parses the arguments passed in on the command line (non-interactive mode only).
+# Resolves those parameters into a vm view and a relocate spec.
+###
+sub parse_and_resolve_params {
+   ###
+   # 'datastore' parameter
+   ###
+   my $datacenter_name = Opts::get_option('datacenter');
+   my $datacenter_view = find_datacenter_by_name(name => $datacenter_name); 
+
+
+   ###
+   # 'vm' parameter
+   ###
+   my @vm_args = split(/:/, Opts::get_option('vm'));
+   my $vm_datastore_path = $vm_args[0];
+   my $dest_datastore_name =$vm_args[1];
+
+   my $vm_view = find_vm_in_datacenter_by_path(vm_datastore_path => $vm_datastore_path,
+                                               datacenter_view => $datacenter_view);
+   my $datastore_view = find_datastore_in_datacenter(datastore_name => $dest_datastore_name,
+                                                     datacenter_view => $datacenter_view);
+
+   ###
+   # 'disks' parameter
+   ###
+   my $diskid_to_dsview;
+   if (Opts::option_is_set('disks')) {
+      my @disks = split(/,/, Opts::get_option('disks'));
+      foreach (@disks) {
+         my @disk = split /:/;
+         my $disk_id =
+            find_disk_key_by_path(vm_view => $vm_view, 
+                                     disk_datastore_path => $disk[0]);
+         my $ds_view =
+            find_datastore_in_datacenter(datastore_name => $disk[1],
+                                         datacenter_view => $datacenter_view);
+
+         $diskid_to_dsview->{$disk_id} = $ds_view;
+      }
+   }
+   my $disk_locators_ref = create_disk_locators(vm_view => $vm_view,
+                                                datacenter_view => $datacenter_view,
+                                                diskid_to_dsview => $diskid_to_dsview);
+
+   ###
+   # Put it all together.
+   ###
+   my $relocate_spec = VirtualMachineRelocateSpec->new(datastore => $datastore_view->get_property('mo_ref'),
+                                                       disk => $disk_locators_ref);
+
+   return ($vm_view, $relocate_spec);
+}
+
+###
+# Creates and returns a new DiskLocator array.
+###
+sub create_disk_locators {
+   my %args = @_;
+   my $vm_view = $args{vm_view};
+   my $datacenter_view = $args{datacenter_view};
+   my $diskid_to_dsview = $args{diskid_to_dsview};
+
+   my @disk_locators;
+
+   foreach (keys %$diskid_to_dsview) {
+      my $single_disk_locator =
+         VirtualMachineRelocateSpecDiskLocator->new(diskId => $_,
+                                                    datastore => $diskid_to_dsview->{$_}->get_property('mo_ref'));
+
+      push @disk_locators, $single_disk_locator;
+   }
+
+   return \@disk_locators;
+}
+
+###
+# Calls relocate and tracks the progress of the task.
+# Prints the status.
+###
+sub relocate_and_track_progress {
+   my %args = @_;
+   my $vm_view = $args{vm_view};
+   my $relocate_spec = $args{spec};
+  
+   my $task_ref = $vm_view->RelocateVM_Task(spec => $relocate_spec);
+   my $task_view = Vim::get_view(mo_ref => $task_ref);
+ 
+   # Print the scale and then enough spaces so that the hash marks line up.
+   print "0% |";
+   print "-" x 100;
+   print "| 100%\n";
+   print " " x 4;
+
+   my $progress = 0;
+
+   # Keep checking the task's status until either error
+   # or success.  If the task is in progress print out
+   # the progress.
+   while (1) {
+      my $info = $task_view->info;
+      if ($info->state->val eq 'success') {
+         # bug 274300
+         print "#" x (100 - $progress);
+         print "\n";
+         return $info->result;
+      } elsif ($info->state->val eq 'error') {
+         print "\n";
+         my $soap_fault = SoapFault->new;
+         $soap_fault->detail($info->error->fault);
+         $soap_fault->fault_string($info->error->localizedMessage);
+         die $soap_fault;
+      } else {
+         # Don't buffer output right here.  Doing so 
+         # causes the progress bar to not display correctly.
+         my $old_flush_value = $|;
+         $| = 1;
+
+         my $new_progress = $info->progress;
+         if ($new_progress and $new_progress > $progress) {
+            # Print one # for each percentage done.
+            print "#" x ($new_progress - $progress);
+            $progress = $new_progress;
+         }
+
+         $| = $old_flush_value;
+
+         # 2 seconds between updates is fine
+         sleep 2;
+         $task_view->update_view_data();
+      }
+   }
+}
+
+###
+# Runs a function which queries the user for something until it returns 
+# without an error, or we've tried $max_tries number of times.
+###
+sub query_with_retries {
+   my %args = @_;
+   my $query_func = $args{query_func};
+   my $query_args = $args{query_args};
+
+   for (my $num_tries = 0; $num_tries < $max_tries; $num_tries++) {
+      if ($num_tries > 0) {
+         print "$try_again_str\n";
+      }
+
+      my $result;
+      eval {
+         $result = $query_func->(@$query_args);
+      };
+
+      if ($@) {
+         print $@;
+         print "\n";
+         next;
+      }
+
+      return $result;
+   }
+
+   die "$too_many_failures_str\n";
+}
+
+###
+# Query the user for username and password, and then login.
+###
+sub query_credentials_and_login {
+   my %args = @_;
+   my $service_url = $args{service_url};
+
+   print "$prompt_username_str";
+   chomp (my $username = <STDIN>);
+
+   print "$prompt_password_str";
+   my $password;
+   if ( $^O eq "MSWin32" ) {
+      require Term::ReadKey;
+      Term::ReadKey->import(qw(ReadMode));
+      Term::ReadKey->import(qw(ReadLine));
+      ReadMode('noecho');
+      chomp($password = ReadLine(0));
+      ReadMode('normal');
+   }
+   else {
+      system("stty -echo") and die "ERROR: stty failed\n";
+      chomp ($password = <STDIN>);
+      system("stty echo") and die "ERROR: stty failed\n";
+   }
+   print "\n\n";
+
+   print &$connecting_str_func($service_url) . "\n";
+
+   eval {
+   Vim::login(service_url => $service_url,
+              user_name => $username,
+              password => $password);
+   };
+   # A bit cleaner error message.
+   die "$login_failure_str\n" if $@;
+
+   print "$connected_str\n\n"
+}
+
+###
+# Asks the user to enter the name of a datacenter, and resolves it to
+# the actual datacenter. 
+###
+sub query_and_lookup_datacenter {
+   print "$prompt_datacenter_str";
+   chomp (my $datacenter_name = <STDIN>);
+
+   my $datacenter_view = 
+      find_datacenter_by_name(name => $datacenter_name);
+
+   return $datacenter_view;
+}
+
+###
+# Asks the user to enter the datastore path of a vm, and resolves it
+# to the actual vm.
+###
+sub query_and_lookup_vm {
+   my %args = @_;
+   my $datacenter_view = $args{datacenter_view};
+
+   print "$prompt_vm_str";
+   chomp (my $vm_datastore_path = <STDIN>);
+
+   my $vm_view = 
+      find_vm_in_datacenter_by_path(vm_datastore_path => $vm_datastore_path,
+                                    datacenter_view => $datacenter_view); 
+
+   return $vm_view;
+}
+
+###
+# Asks the user to enter a datastore_name, and resolves it to 
+# the actual datastore.  
+###
+sub query_and_lookup_datastore {
+   my %args = @_;
+   my $datacenter_view = $args{datacenter_view};
+
+   print "$prompt_datastore_str";
+   chomp (my $datastore_name = <STDIN>);
+     
+   my $datastore_view = 
+      find_datastore_in_datacenter(datastore_name => $datastore_name,
+                                   datacenter_view => $datacenter_view);
+  
+   return $datastore_view;
+}
+
+###
+# Asks the user for the datastore path to a disk, and resolves
+# it to the disk id.
+###
+sub query_and_lookup_disk {
+   my %args = @_;
+   my $vm_view = $args{vm_view};
+
+   print "$prompt_disk_str";
+   chomp (my $disk_datastore_path = <STDIN>);
+
+   my $disk_id = 
+      find_disk_key_by_path(vm_view => $vm_view,
+                            disk_datastore_path => $disk_datastore_path);
+
+   return $disk_id;
+}
+
+###
+# Asks the user to choose between yes and no, and returns true or
+# false accordingly.  Anything other than yes or no is an error.
+###
+sub query_yes_or_no {
+   print "$prompt_yes_or_no_str";
+   chomp (my $input = <STDIN>);
+   $input = trim(str => $input);
+   if ($input =~ /^yes$/i) {
+      return 1;
+   } elsif ($input =~ /^no$/i) {
+      return 0;
+   } else {
+      die "$not_a_yes_or_no_str\n";
+   }
+}
+
+###
+# Given a datastore path, does some sanity checking and then turns it into canonical form.
+###
+sub canonicalize_ds_path {
+   my %args = @_;
+   my $ds_path = $args{ds_path};
+
+   Util::trace(2, "Canonicalizing $ds_path.\n");
+
+   $ds_path = trim(str => $ds_path);
+
+   # $ds_path should start with "[stuff]".
+   # XXX - Could make this sanity check spiffier.
+   if ($ds_path !~ /^ \[ [^]]+ \] /x) {
+      die &$malformed_ds_path_str_func($ds_path) . "\n";
+   }
+
+   # Allow for any amount of whitespace after the ']'.
+   # The final canonical form is "[stuff] junk" (with exactly one space).
+   # XXX - Could be even more forgiving.
+   $ds_path =~ s/^ \[ ([^]]+) \] \s* (.*) $/\[$1\] $2/xg;
+
+   Util::trace(2, "Result of canonicalization is $ds_path.\n");
+
+   return $ds_path;
+}
+
+###
+# Removes trailing and leading whitespace.
+###
+sub trim {
+   my %args = @_;
+   my $str = $args{str};
+
+   Util::trace(2, "Trimming string '$str'.\n");
+   $str =~ s/^\s+//;
+   $str =~ s/\s+$//;
+   Util::trace(2, "The trimmed string is '$str'.\n");
+
+   return $str;
+}
+
+###
+# Finds the datacenter with the given name.
+###
+sub find_datacenter_by_name {
+   my %args = @_;
+   my $name = $args{name};
+
+   $name = trim(str => $name);
+
+   Util::trace(2, "Finding datacenter $name.\n"); 
+
+   my $datacenter_view = Vim::find_entity_view(view_type => 'Datacenter',
+                                               filter => {name => $name});
+   if (!$datacenter_view) {
+      die &$bad_datacenter_str_func($name) . "\n";
+   }
+
+   return $datacenter_view;
+}
+
+###
+# Finds a vm with the given datastore path in the datacenter.
+###
+sub find_vm_in_datacenter_by_path {
+   my %args = @_;
+   my $vm_datastore_path = $args{vm_datastore_path};
+   my $datacenter_view = $args{datacenter_view};
+
+   Util::trace(2, "Finding virtual machine $vm_datastore_path.\n");
+
+   # defect 250646
+   $vm_datastore_path = canonicalize_ds_path(ds_path => $vm_datastore_path);
+   my $vm_view = find_entity_in_datacenter(type => 'VirtualMachine', 
+                                           filter => {'config.files.vmPathName' => $vm_datastore_path}, 
+                                           datacenter_view => $datacenter_view);
+   if (!$vm_view) {
+      die &$bad_vm_str_func($vm_datastore_path) . "\n";
+   }
+
+   # Relocate() works for all power states, but we only want this script
+   # to run on powered-on VMs.
+   if ($vm_view->runtime->powerState->val ne 'poweredOn') {
+      die $invalid_power_state_str . "\n";
+   }
+
+   return $vm_view;
+}
+
+###
+# Finds the entity with these properties in this datacenter.
+###
+sub find_entity_in_datacenter {
+   my %args = @_;
+   my $type = $args{type};
+   my $filter = $args{filter};
+   my $datacenter_view = $args{datacenter_view};
+
+   Util::trace(2, "Finding entity in datacenter " . $datacenter_view->name . "\n");
+
+   my $entity_views = Vim::find_entity_views(view_type => $type,
+                                             filter => $filter);
+
+   # Make sure we get the entity which is in the correct datacenter.
+   my $entity_view;
+   foreach (@$entity_views) {
+      my $entity_datacenter_view = find_datacenter_of_entity(entity_view => $_);
+
+      if ($datacenter_view->get_property('mo_ref')->value eq $entity_datacenter_view->get_property('mo_ref')->value) {
+         $entity_view = $_;
+         last;
+      }
+   }
+
+   # May be undef.  Caller will have to handle that.
+   return $entity_view;
+}
+
+###
+# Finds the datacenter which this entity belongs to.
+###
+sub find_datacenter_of_entity {
+   my %args = @_;
+   my $entity_mo_ref = $args{entity_view}->get_property('mo_ref');
+
+   my $entity_view = Vim::get_view(mo_ref => $entity_mo_ref);
+   Util::trace(2, "Finding the datacenter of " . $entity_view->name . ".\n");
+
+   while ($entity_mo_ref) {
+      $entity_view = Vim::get_view(mo_ref => $entity_mo_ref);
+
+      if ($entity_view->isa('Datacenter')) {
+         Util::trace(2, "Found $entity_view->name as the datacenter.\n");
+         return $entity_view;
+      } else {
+         $entity_mo_ref = $entity_view->parent;
+      }
+   }
+}
+
+###
+# Finds a datastore by name, in the given datacenter.
+###
+sub find_datastore_in_datacenter {
+   my %args = @_;
+   my $datastore_name = $args{datastore_name};
+   my $datacenter_view = $args{datacenter_view};
+
+   $datastore_name = trim(str => $datastore_name);
+
+   Util::trace(2, "Finding datastore $datastore_name in datacenter " . $datacenter_view->name . "\n"); 
+
+   my $ds_mor_array = $datacenter_view->datastore;
+   my $datastore_views = Vim::get_views(mo_ref_array => $ds_mor_array);
+   foreach (@$datastore_views) {
+      if ($_->info->name eq $datastore_name) {
+         return $_;
+      }
+   }
+
+   die &$bad_datastore_str_func($datastore_name) . "\n";
+}
+
+###
+# Finds the disk key, given the datastore path of the disk, and the vm it is associated with.
+###
+sub find_disk_key_by_path {
+   my %args = @_;
+   my $vm_view = $args{vm_view};
+   my $disk_datastore_path = $args{disk_datastore_path};
+
+   $disk_datastore_path = canonicalize_ds_path(ds_path => $disk_datastore_path);
+
+   Util::trace(2, "Finding disk key for disk $disk_datastore_path");
+
+   my $layout = $vm_view->layout;
+   if ($layout) {
+
+      my $disk_list = $layout->disk;
+      foreach my $disk (@$disk_list) {
+
+         my $disk_file_list = $disk->diskFile;
+         foreach my $disk_file (@$disk_file_list) {
+
+            if ($disk_file eq $disk_datastore_path) {
+               return $disk->key;
+            }
+         }
+      }
+   }
+
+   die &$bad_disk_str_func($disk_datastore_path) . "\n";
+}
+
+__END__
+
+=head1 NAME
+
+svmotion - move the storage of a virtual machine while it is running
+
+=head1 SYNOPSIS
+
+ svmotion <connection_options> --interactive
+
+ svmotion <connection_options> 
+         --datacenter=<datacenter name>
+         --vm  <VM config datastore path>:
+               <new datastore name>
+         [--disks <virtual disk datastore path>:
+               <new datastore>,
+               <virtual disk datastore path>:
+               <new datastore>]
+
+=head1 DESCRIPTION
+
+The svmotion command moves a virtual machine's configuration file, and, optionally, 
+its disks, while the virtual machine is running. The I<Basic System Administration> manual discusses 
+how to use svmotion. 
+You can use svmotion to initiate migrations for virtual machines running on either ESX or ESXi hosts. 
+
+When you run svmotion, C<--server> must point to a vCenter Server system. 
+
+The C<--vm> option specifies the virtual machine and its destination. By default, svmotion relocates all virtual disks 
+to the same datastore as the virtual machine. Use the C<--disks> option to relocate individual 
+virtual disks to different datastores.
+You cannot relocate a virtual disk without relocating the virtual machine configuration file.
+
+The svmotion command supports both interactive or noninteractive mode. 
+
+=head2 Interactive Mode
+
+To use the command in interactive mode, type C<svmotion --interactive>. The command prompts you for the 
+information necessary to complete the storage migration. Use quotes around special characters on Windows systems. 
+
+When you specify C<--interactive>, all other options are ignored. 
+
+=head2 Noninteractive Mode
+
+In noninteractive mode, the svmotion command uses the following syntax:
+
+ svmotion [<connection_options] 
+      --datacenter=<datacenter_name> 
+      --vm <VM config_ds_path>:<new_ds>  
+      [--disks <virtual_disk_ds_path>:<new_ds>, <vdisk_ds_path>:<new_ds>] 
+
+Square brackets indicate optional elements, not datastores. 
+
+
+=head1 OPTIONS
+
+
+=over
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run svmotion with C<--help>
+for a list of all connection options.
+
+In non-interactive mode, all vCLI common options are supported.
+In interactive mode, command-line options are ignored and svmotion uses user input instead. 
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--usage>
+
+Prints a short usage string. The usage string is also displayed when the number or format of input parameters is incorrect.
+
+=item B<--interactive>
+
+Starts interactive mode, where svmotion prompts you for all arguments. In interactive mode, 
+svmotion does a sanity test on each option. 
+
+B<Note:> You must enclose strings that contain special characters in quotes when responding to prompts. 
+
+=item B<--datacenter E<lt>datacenter_nameE<gt>>
+
+Datacenter that contains the virtual machine to be migrated. Surround the name in quotes if it contains white spaces 
+or special characters.
+
+=item B<--disks E<lt>virtual_disk_datastore_pathE<gt>:E<lt>new_datastoreE<gt>...>
+
+Locations of individual disks. The format is datastore path of the disk, colon, name of the destination datastore. 
+If the path contains spaces or special characters, you must quote it.
+You can specify multiple datastore and destination pairs, separated by commas.
+If you do not specify this option, all virtual disks associated with a virtual machine are relocated to 
+the same datastore as the virtual machine configuration file. Specify this option to locate individual virtual disks 
+to different datastores.
+
+To keep a virtual disk on its current datastore, use the C<--disks> option for that disk, with its current datastore as the 
+<new_datastore>. 
+
+
+=item B<--vm E<lt>VM_config_ds_pathE<gt>:E<lt>new_dsE<gt>>
+
+Specifies which virtual machine to move and to which datastore.
+
+<VM_config_ds_path> is the path to the virtual machine configuration file. If the path contains spaces or 
+other special characters, you must quote it. 
+
+<new datastore> is the name of the new datastore for the virtual machine configuration file or disk.
+
+=back
+
+
+=head1 EXAMPLES
+
+These examples are formatted for readability. In general, the command should be all on one line.
+
+Start the interactive version.
+
+=over
+
+ svmotion --interactive
+
+=back 
+
+Relocate a virtual machine's storage (including disks) to new_datastore:
+
+=over
+
+ svmotion --url=https://myvc.mycorp.com/sdk 
+          --username=me 
+          --password=secret 
+          --datacenter=DC1 
+          --vm='[old_datastore] myvm/myvm.vmx:
+                new_datastore'
+
+=back 
+
+Relocate a virtual machine's storage to new_datastore, but leave the two disks (myvm/myvm_1.vmdk and 
+myvm/myvm_2.vmdk) in old_datastore:
+
+=over
+
+ svmotion  --datacenter='My DC' 
+           --vm='[old_datastore] myvm/myvm.vmx:
+                 new_datastore'
+           --disks='[old_datastore] myvm/myvm_1.vmdk:
+                    old_datastore,
+                    [old_datastore] myvm/myvm_2.vmdk:
+                    old_datastore'
+
+=back

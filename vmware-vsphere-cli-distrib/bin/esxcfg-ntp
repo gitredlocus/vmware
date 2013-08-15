@@ -1,0 +1,281 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+#
+# VMware ESX Server NTP server configuration tool
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!  The host to use when connecting via a vCenter Server. !,
+      required => 0,
+   },
+   'list' => {
+      alias => "l",
+      type => "",
+      help => qq!  Displays all NTP servers used by the host!,
+      required => 0,
+   },
+   'start' => {
+      alias => "r",
+      type => "",
+      help => qq!  Starts the NTP service on the host!,
+      required => 0,
+   },
+   'stop' => {
+      alias => "s",
+      type => "",
+      help => qq!  Stops the NTP service on the host!,
+      required => 0,
+   },      
+   'add' => {
+      alias => "a",
+      type => "=s",
+      help => qq!  The name or IP address of the NTP server to add (IPv6 address valid for vSphere 4.0 and later)!,
+      required => 0,
+   },
+   'delete' => {
+      alias => "d",
+      type => "=s",
+      help => qq!  The name or IP address of the NTP server to remove (IPv6 address valid for vSphere 4.0 and later)!,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $add = Opts::get_option('add');
+my $delete = Opts::get_option('delete');
+my $list = Opts::get_option('list');
+my $start = Opts::get_option('start');
+my $stop = Opts::get_option('stop');
+
+Opts::assert_usage(defined($add) || defined($delete) || defined($list) || defined($start) || defined($stop),
+   "At least one of '--add,--delete,--list,--start,--stop' must be supplied.");
+
+Util::connect();
+
+my $ADD_OP = 1;
+my $DEL_OP = 2;
+my $START_OP = 3;
+my $STOP_OP = 4;
+
+my $host_view = VIExt::get_host_view(1, ['configManager.dateTimeSystem', 'configManager.serviceSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+my $dts = Vim::get_view (mo_ref => $host_view->{'configManager.dateTimeSystem'});
+
+if (defined($list)) {
+   list($dts);
+} elsif (defined($start)) {
+   service($host_view, $START_OP);
+} elsif (defined($stop)) {
+   service($host_view, $STOP_OP);   
+} elsif (defined($add)) {
+   modify($dts, $add, $ADD_OP);
+} elsif (defined($delete)) {
+   modify($dts, $delete, $DEL_OP);
+} else {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+
+sub get_servers {
+   my ($dts) = @_;
+   my $ntp_config = $dts->{dateTimeInfo}->{ntpConfig};
+   if (defined($ntp_config)) {
+      return $ntp_config->{server};
+   }
+   return undef;
+}
+
+sub list {
+   my ($dts) = @_;
+   my $servers = get_servers($dts);
+   if (defined($servers) && scalar(@$servers)) {
+      print "Configured NTP servers:\n\n";
+      foreach my $server (@$servers) {
+         print "$server\n";
+      }
+   } else {
+      print "No NTP servers configured.\n";
+   }
+}
+
+sub service {
+   my ($host_view, $op) = @_;
+   my $service = Vim::get_view (mo_ref => $host_view->{'configManager.serviceSystem'});
+   
+   if ($op == $START_OP) {
+      eval { $service->StartService(id => 'ntpd'); };
+   } else {
+      eval { $service->StopService(id => 'ntpd'); };
+   }
+   if ($@) {
+      if ($op == $START_OP) {
+         VIExt::fail("Unable to start NTP service: " . ($@->fault_string));
+      } else {
+         VIExt::fail("Unable to stop NTP service: " . ($@->fault_string));
+      }
+   }
+   if ($op == $START_OP) {
+      print "Started NTP service on host.\n";
+   } else {
+      print "Stopped NTP service on host.\n";
+   }
+}
+
+sub modify {
+   my ($dts, $server, $op) = @_;
+
+   my $servers = get_servers($dts);
+   $servers = [] unless defined($servers);
+
+   if ($op == $ADD_OP) {
+      foreach my $item (@$servers) {
+         if ($item eq $server) {
+            print "Host already configured to use $server.\n";
+            return;
+         }
+      }
+      push(@$servers,$server);
+      print "Configuring $server as NTP server.\n";
+   } else {
+      my $pos = -1;
+      my $found = 0;
+      foreach my $item (@$servers) {
+         $pos++;
+         if ($item eq $server) {
+            $found = 1;
+            splice(@$servers, $pos, 1);
+            last;
+         }
+      }
+
+      if($found) {
+         print "Removing $server as NTP server.\n";
+      }
+      else {
+         print "Cannot delete. Host currently not configured to use $server.\n";
+         return;
+      }
+   }
+   my $dtc = new HostDateTimeConfig();
+   my $ntpc = new HostNtpConfig();
+   $dtc->{ntpConfig} = $ntpc;
+   $ntpc->{server} = $servers;
+   eval { $dts->UpdateDateTimeConfig(config => $dtc); };
+   if ($@) {
+      VIExt::fail("Unable to ntp servers: " . ($@->fault_string));
+   }
+}
+
+__END__
+
+=head1 NAME
+
+vicfg-ntp - configure the NTP server
+
+=head1 SYNOPSIS
+
+ vicfg-ntp [connection_options]
+   [--add <name_or_IP> |
+    --delete <name_or_IP |
+    --help |
+    --list |
+    --start |
+    --stop |
+    --vihost <esx_host>]
+
+=head1 DESCRIPTION
+
+The vicfg-ntp command supports specifying the NTP (Network Time Protocol) server 
+for an ESX/ESXi host. Some protocols, such as Kerberos, must have accurate information 
+about the current time. 
+
+=head1 OPTIONS
+
+=over
+
+=item B<--add | -a>
+
+Adds the specified NTP server. You can use the name 
+or IP address to specify the NTP server (IPv6 address valid for vSphere 4.0 and later).
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-ntp --help>
+for a list of all connection options.
+
+=item B<--delete | -d>
+
+Deletes the specified NTP server. You can use the name 
+or IP address to specify the NTP server (IPv6 address valid for vSphere 4.0 and later).
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with --help has the same effect.
+
+=item B<--list | -l>
+
+Displays all NTP servers used by the host.
+
+=item B<--start | -r>
+
+Starts the NTP service on the target host.
+
+=item B<--stop | -s>
+
+Stops the NTP service on the target host.
+
+=item B<--vihost | -h>
+
+When you run a vCLI command with the C<--server> option pointing to a 
+vCenter Server system, use C<--vihost> to specify the ESX/ESXi host to run the command against.
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-ntp --help> for a list of common options including connection options.
+
+
+Display the list of NTP servers used by this host:
+
+ vicfg-ntp --server <server name> --username <user name>
+    --password <password> --list
+
+Add a remote NTP server with the specified host name or IP address:
+
+ vicfg-ntp --server <server name> --username <user name>
+    --password <password> --add <ntp-server>
+
+Delete the remote NTP server with the specified host name or IP address:
+
+ vicfg-ntp --server <server name> --username <user name> 
+    --password <password> --delete <ntp-server>
+
+Start the NTP service on the host:
+
+ vicfg-ntp --server <server name> --username <user name> 
+    --password <password> --start
+
+Stop the NTP service on the host:
+
+ vicfg-ntp --server <server name> --username <user name> 
+    --password <password> --stop

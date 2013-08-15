@@ -1,0 +1,720 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2008 VMware, Inc.  All rights reserved.
+#
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!
+             The host to use when connecting via a vCenter Server.
+      !,
+      required => 0,
+   },
+   'list' => {
+      alias => 'l',
+      type => "",
+      help => qq!
+             List all logical devices known on this system with detailed \
+             information.  Supported on ESX 4.0 and ESXi 4.0.
+      !,
+      required => 0,
+   },
+   'compact-list' => {
+      alias => 'c',
+      type => "",
+      help => qq!
+             List all logical devices each on a single line, with limited \
+             information.  Supported on ESX 4.0 and ESXi 4.0.
+      !,
+      required => 0,
+   },
+   'uids' => {
+      alias => 'u',
+      type => "",
+      help => qq!
+             List all device unique identifiers with their primary name. \
+             Supported on ESX 4.0 and ESXi 4.0.
+      !,
+      required => 0,
+   },
+   'device' => {
+      alias => 'd',
+      type => "=s",
+      help => qq!
+             Used to filter the --list, --compact-list and --uids commands \
+             to limit output to a specific device.   Supported on ESX 4.0 \
+             and ESXi 4.0.
+      !,
+      required => 0,
+   },
+   'vmfs' => {
+      alias => 'm',
+      type => "",
+      help => qq!
+             Print mappings for VMFS volumes to the corresponding partition, \
+             path to that partition, VMFS uuid, extent number and volume \
+             names.  Supported on ESX 2.5, ESX 3.0, ESX 3.5, ESX 3i, ESX 4.0 \
+             and ESXi 4.0.
+      !,
+      required => 0,
+   },
+   'hbas' => {
+      alias => 'a',
+      type => "",
+      help => qq!
+             Print HBA devices with identifying information.   Supported on \
+             ESX 4.0 and ESXi 4.0.
+      !,
+   },
+   'hba-device-list' => {
+      alias => 'A',
+      type => "",
+      help => qq!
+             Print a mapping between HBAs and the devices it provides paths \
+             to.  Supported on ESX 4.0 and ESXi 4.0.
+      !,
+   },
+   'query' => {
+      alias => "q",
+      type => "",
+      help => qq!
+             Print mappings in 2.5 compatibility mode to mimic
+             vmkpcidivy -q vmhba_devs.  Supported on ESX 2.5, ESX 3.0, \
+             ESX 3.5, ESX 3i only.
+      !,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $SPACE = 3;
+
+my $list = Opts::get_option('list');
+my $list_compact = Opts::get_option('compact-list');
+my $uids = Opts::get_option('uids');
+my $device = Opts::get_option('device');
+my $vmfs = Opts::get_option('vmfs');
+my $hbas = Opts::get_option('hbas');
+my $hba_device_list = Opts::get_option('hba-device-list');
+my $query = Opts::get_option('query');
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['config.product.version', 'config.storageDevice.scsiLun', 'configManager.storageSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+# bug 477326
+my %supportedversions = Vim::query_api_supported(Opts::get_option('url'));
+my $version = $supportedversions{'version'};
+my $prior_versions = $supportedversions{'priorversions'};
+
+my $ss =
+   Vim::get_view (mo_ref => $host_view->{'configManager.storageSystem'});
+
+my $version_pattern = "^(4.|5.)";
+my $support_version = "ESX 4.x, ESXi 4.x, ESXi 5.x";
+
+if (defined $list) {
+   check_version($version_pattern, $support_version);
+   list($ss, 'detail', $device);
+} elsif (defined $list_compact) {
+   check_version($version_pattern, $support_version);
+   list($ss, 'compact', , $device);
+} elsif (defined $uids) {
+   check_version($version_pattern, $support_version);
+   list($ss, 'uids', $device);
+} elsif (defined $vmfs) {
+   list_vmfs($ss, $device);
+} elsif (defined $hbas) {
+   check_version($version_pattern, $support_version);
+   list_hbas($ss);
+} elsif (defined $hba_device_list) {
+   check_version($version_pattern, $support_version);
+   list_hbas_devs($ss);
+} elsif (defined $query) {
+   check_version("^[2.|3.]", "ESX 2.5, ESX 3.0, ESX 3.5, and ESX 3i only");
+   query($ss);
+} elsif (defined $device && !($list||$list_compact||$uids)) {
+   print "Error: --device|-d option should be used with --list|-l or " . 
+       "--compact-list|-c or --uids|-u option\n";
+   Opts::usage();
+   exit 1;
+} else {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+
+sub check_version {
+   my ($pattern, $message) = @_;
+   my $host_version = $host_view->{'config.product.version'};
+   if ($host_version ne 'e.x.p' && $host_version !~ /$pattern/) {
+      VIExt::fail("ESX host version is $host_version.  This operation is supported on $message");
+   }
+}
+
+sub list {
+   my ($ss, $option, $device) = @_;
+   my $pst = getPlugStoreTopology($ss);
+   my $devices = $ss->storageDeviceInfo->scsiLun;
+   my $plugins = getPlugins($ss);
+   my %pluginNames = getPluginNames($plugins);
+
+   #for --compact option
+   my @deviceNames = ();
+   my @lunTypes = ();
+   my @conDevices = ();
+   my @sizes = ();
+   my @plugins = ();
+   my @displayNames = ();
+  
+   #for --uids option
+   my @primaryIDs = ();
+   my @otherUIDs = ();
+   # bug 427648
+   my $found = 0;
+
+   my $pst_devices = $pst->device;
+   my $paths = $pst->path;
+   my $target = $pst->target;
+
+   foreach my $d (@$devices) {
+      my $deviceName = $d->canonicalName;
+      my $lunType = $d->lunType;
+      my $size = 0;
+      if (exists ($d->{capacity})) {
+         $size = $d->capacity->blockSize * $d->capacity->block
+                 / 1024 / 1024;
+         $size =~ /([\d]{1,})[.]{0,1}/;
+         $size = $1;
+      }
+      my $displayName = $d->displayName;
+      my $plugin = $pluginNames{$deviceName};
+      # bug 315099 - extra look up based on key
+      if (!defined($plugin)) {
+         my @tokens = split('-', $d->key);
+         $plugin = $pluginNames{$tokens[2]};
+      }
+      my $descriptors = $d->descriptor;
+      my $isPseudo = '';     # <unsupported>
+      my $status = '';       # <unsupported>
+      my $isRDMCap = '';     # <unsupported>
+      my $isRemovable = '';  # <unsupported>
+      # bug 416255
+      my $isLocal = "false";
+
+      # bug 476794
+      if(defined $d->key) {
+         foreach my $p (@$pst_devices) {
+            if($p->lun eq $d->key) {
+               foreach my $path (@$paths) {
+                  if(defined $path->device && $path->device eq $p->key) {
+                     foreach my $t (@$target) {
+                        if(defined $path->target && $path->target eq $t->key) {
+                           if(defined $t->transport) {
+                              my $class = ref $t->transport;
+                              if ($class->isa('HostBlockAdapterTargetTransport') 
+                                  || $class->isa('HostParallelScsiTargetTransport')) {
+                                 $isLocal = "true";
+                              }
+                           }
+                        }
+                     }
+                  }
+               }
+            }
+         }
+      }
+
+      if ($option eq 'detail') {
+         if (!$device || ($device && ($device eq $deviceName))) {
+            print $deviceName . "\n";
+            print "   Device Type: $lunType\n";
+            print "   Size: $size MB\n";
+            print "   Display Name: $displayName\n";
+            print "   Plugin: $plugin\n";
+            print "   Console Device: " . $d->deviceName . "\n";
+            print "   Devfs Path: " . $d->deviceName . "\n";
+            print "   Vendor: " . $d->vendor . "  Model: " . $d->model .
+                  "  Revis: " . $d->revision . "\n";
+            print "   SCSI Level: " . $d->scsiLevel .
+                  "  Is Pseudo: $isPseudo" .
+                  "  Status: $status\n";
+            print "   Is RDM Capable: $isRDMCap Is Removable: $isRemovable\n";
+            # bug 477299
+            # print "   Is Local: $isLocal\n";
+            print "   Other Names:\n";
+            foreach $a (@$descriptors) {
+               if ($a->id ne $deviceName && $a->id ne $d->uuid) {
+                  print "      " . $a->id . "\n";
+               }
+            }
+            # bug 477326
+            if(version_found("4.1") == 1) {
+               if(defined $d->vStorageSupport) {
+                  if($d->vStorageSupport eq "vStorageSupported") {
+                     print "   VAAI Status: supported";
+                  }
+                  elsif($d->vStorageSupport eq "vStorageUnknown") {
+                     print "   VAAI Status: unknown";
+                  }
+                  elsif($d->vStorageSupport eq "vStorageUnsupported") {
+                     print "   VAAI Status: unsupported";
+                  }
+               }
+               else {
+                  print "   VAAI Status: Not Available";
+               }
+            }
+
+            $found = 1;
+            print "\n";
+         }
+      } elsif ($option eq 'compact') {
+         if (!$device || ($device && ($device eq $deviceName))) {
+            push(@deviceNames, $deviceName);
+            push(@lunTypes, $lunType);
+            push(@conDevices, $d->deviceName);
+            push(@sizes, $size);
+            push(@plugins, $plugin);
+            push(@displayNames, $displayName);
+            $found = 1;
+         }
+      } elsif ($option eq 'uids') {
+         if (!$device || ($device && ($device eq $deviceName))) {
+            foreach $a (@$descriptors) {
+               if ($a->id ne $deviceName && $a->id ne $d->uuid ) {
+                  push(@primaryIDs, $deviceName);
+                  push(@otherUIDs, $a->id);
+               }
+            }
+            $found = 1;
+         }
+      }
+   }
+   # bug 427648
+   if (defined $device && $found == 0) {
+      VIExt::fail("Specified device $device not found.");
+   }   
+   # output
+   if ($option eq 'compact') {
+      my $deviceName_length = getLength(\@deviceNames) + $SPACE;
+      my $lunType_length = getLength(\@lunTypes) + $SPACE + 5;
+      my $conDevice_length = getLength(\@conDevices) + $SPACE;
+      my $size_length = getLength(\@sizes) + $SPACE + 3;
+      my $plugin_length = getLength(\@plugins) + $SPACE + 3;
+      my $displayName_length = getLength(\@displayNames) + $SPACE;
+    
+      printf '%-' . $deviceName_length . 's', "Device UID";
+      printf '%-' . $lunType_length . 's', "Device Type";
+      printf '%-' . $conDevice_length . 's', "Console Device";
+      printf '%-' . $size_length . 's', "Size";
+      printf '%-' . $plugin_length . 's', "Plugin";
+      printf '%-' . $displayName_length . 's', "Display Name";
+      print "\n";
+
+      my $j = 0;
+      foreach (@deviceNames) {
+         printf '%-' . $deviceName_length . 's', $deviceNames[$j];
+         printf '%-' . $lunType_length . 's', $lunTypes[$j];
+         printf '%-' . $conDevice_length . 's', $conDevices[$j];
+         printf '%-' . $size_length . 's', $sizes[$j] . "MB";
+         printf '%-' . $plugin_length . 's', $plugins[$j];
+         printf '%-' . $displayName_length . 's', $displayNames[$j];
+         print "\n";
+         $j++;
+      }
+   } elsif ($option eq 'uids') {
+      my $primaryID_length = getLength(\@primaryIDs) + $SPACE;
+      printf '%-' . $primaryID_length . 's', "Primary UID";
+      print "Other UID\n";
+      my $j = 0;
+      foreach (@primaryIDs) {
+         printf '%-' . $primaryID_length . 's', $primaryIDs[$j];
+         print $otherUIDs[$j] . "\n";
+         $j++;
+      }
+   }
+}
+
+sub version_found {
+   my ($reqd_version) = @_;
+   if($version eq $reqd_version) {
+      return 1;
+   }
+   foreach(@$prior_versions) {
+      if($_ eq $reqd_version) {
+         return 1;
+      }
+   }
+   return 0;
+}
+
+sub list_hbas {
+   my ($ss) = @_;
+   my $hbas = $ss->storageDeviceInfo->hostBusAdapter;
+   my $adapters = $ss->storageDeviceInfo->plugStoreTopology->adapter;
+   my $uid = '';
+   my $vendor = '';
+   my $pci = undef;
+   my $paths = undef;
+   my @tokens = undef;
+ 
+   my @adapterIDs = ();
+   my @drivers = ();
+   my @uids = ();
+   my @pcis = ();
+   my @models = ();
+ 
+   foreach my $hba (@$hbas) {
+      push(@adapterIDs, $hba->device);
+      push(@drivers, $hba->driver);
+      foreach my $adapter (@$adapters) {
+         if ($adapter->adapter eq $hba->key) {        
+            $paths = $adapter->path;
+            if ($paths && $hba->key !~ /InternetScsiHba/) {
+               @tokens = split ('-', $$paths[0]);
+               $uid = $tokens[2];
+            } elsif ($hba->key =~ /ParallelScsiHba/) {
+               $uid = "pscsi." . $hba->device;
+            } elsif ($hba->key =~ /InternetScsiHba/) {
+               $uid = $hba->iScsiName;
+            } else {
+               $uid = "unknown." . $hba->device;
+            }
+            last;
+         }
+      }
+      push(@uids, $uid);
+      $pci = $hba->pci;
+      if ($pci =~ /([\w]{2}):([\w]{2}).(\d{1})/) {
+         $pci = hex($1) . ":" . hex($2) . "." . hex($3);
+      } else { # UNKNOWN case, set to null
+         $pci = '';
+      }
+      push(@pcis, $pci);
+      my $vendor = '';  # place holder for adapter vendor property
+      my $model = $vendor . $hba->model;
+      if ($model eq '') {
+         if ($hba->driver eq "usb-storage") {
+            $model = "USB";
+         } else {
+            $model = "Unknown";
+         }
+      }  
+      push(@models, $model);
+   }
+
+   #output
+   my $adapterID_length = getLength(\@adapterIDs) + $SPACE + 2;
+   my $driver_length = getLength(\@drivers) + $SPACE;
+   my $uid_length = getLength(\@uids) + $SPACE;
+   my $pci_length = getLength(\@pcis) + $SPACE;
+   printf '%-' . $adapterID_length . 's', 'Adapter_ID';
+   printf '%-' . $driver_length . 's', 'Driver';
+   printf '%-' . $uid_length . 's', 'UID';
+   printf '%-' . $pci_length . 's', 'PCI';
+   print  "Vendor & Model\n";
+
+   my $j = 0;
+   foreach (@adapterIDs) {
+      printf '%-' . $adapterID_length . 's', $adapterIDs[$j];
+      printf '%-' . $driver_length . 's', $drivers[$j];
+      printf '%-' . $uid_length . 's', $uids[$j];
+      printf '%-' . $pci_length . 's', "($pcis[$j])";
+      print $models[$j] . "\n";
+      $j++;
+   }
+}
+
+sub list_hbas_devs {
+   my ($ss) = @_;
+   my $pst = getPlugStoreTopology($ss);
+   my $adapters = $pst->adapter;
+   if ($adapters) {
+      my $adapterName = undef;
+      my $adapterPaths = undef;
+      my $devName = undef;
+      my @tokens = undef;
+      foreach my $adapter (@$adapters) {
+         @tokens = split('-', $adapter->adapter);
+         $adapterName = $tokens[-1];
+         $adapterPaths = $adapter->path;
+         if ($adapterPaths) {
+            foreach my $adapterPath (@$adapterPaths) {
+               @tokens = split('-', $adapterPath);
+               $devName = $tokens[-1];
+               printf '%-10s', $adapterName;
+               print "$devName\n";
+            }
+         }
+      }
+   }
+}
+
+sub list_vmfs {
+   my ($ss, $device) = @_;
+   my $fsmount = $ss->fileSystemVolumeInfo->mountInfo;
+   my $luns = $ss->storageDeviceInfo->scsiLun;
+   my @disks = ();
+   my @devices = ();
+   my @uuids = ();
+   my @index = ();
+   my @names = ();
+
+   if ($fsmount) {
+      my $volume = undef;
+      my $extents = undef;
+      my $diskName = undef;
+      my $partition = undef;
+      my $deviceName = '';
+      foreach my $fsm (@$fsmount) {
+         $volume = $fsm->volume;
+         if ($volume->type eq 'VMFS') {
+            $extents = $volume->extent;
+            my $i = 0;
+            foreach my $extent (@$extents) {
+               $diskName = $extent->diskName;
+               foreach my $lun (@$luns) {
+                  if ($diskName eq $lun->canonicalName) {
+                     $deviceName = $lun->deviceName;
+                     last;
+                  }
+               }
+               $partition = $extent->partition;
+               push(@disks, "$diskName:$partition");
+               push(@devices, "$deviceName:$partition");
+               push(@uuids, $volume->uuid);
+               push(@index, $i);
+               push(@names, $volume->name);
+               $i++;
+            }
+         }
+      }
+      
+      # output
+      if (@disks > 0) {
+         my $diskName_length = getLength(\@disks) + $SPACE;
+         my $deviceName_length = getLength(\@devices) + $SPACE;
+         my $uuidName_length = getLength(\@uuids) + $SPACE;
+         my $j = 0;
+         foreach my $disk (@disks) {
+            printf '%-' . $diskName_length . 's', "$disk";
+            printf '%-' . $deviceName_length . 's', "$devices[$j]";
+            printf '%-' . $uuidName_length . 's', "$uuids[$j]";
+            printf '%-3s', "$index[$j]";
+            print $names[$j] . "\n";
+            $j++;
+         }
+      }
+   }
+}
+
+sub query {
+   my ($ss) = @_;
+   my $luns = $host_view->{'config.storageDevice.scsiLun'};
+   my @names = ();
+   my @paths = ();
+   foreach my $lun (@$luns) {
+      if ($lun->isa('HostScsiDisk')) {
+         push(@names, $lun->canonicalName);
+         push(@paths, $lun->devicePath);
+      }
+   }
+   my $name_length = getLength(\@names) + 1;
+   my $j = 0;
+   foreach (@names) {
+      printf '%-' . $name_length . 's', $names[$j];
+      print $paths[$j]."\n";
+      $j++;
+   }
+}
+
+sub getLength {
+   my ($array) = @_;
+   my $i = 0;
+   my $len = length($$array[0]);
+   my $size = @$array;
+   while ($i < $size) {
+      $len = getMaxLength($len, length($$array[$i]));
+      $i++;
+   }
+   return $len;
+}
+
+sub getMaxLength {
+   my ($a, $b) = @_;
+   return ($a < $b)? $b : $a;
+}
+
+sub getPlugStoreTopology {
+   my ($ss) = @_;
+   return $ss->storageDeviceInfo->plugStoreTopology;
+}
+
+sub getPlugins {
+   my ($ss) = @_;
+   my $pst = getPlugStoreTopology($ss);
+   return $pst->plugin;
+}
+
+sub getPluginNames {
+   my ($plugins) = @_;
+   my %pluginNames = ();
+   foreach my $plugin (@$plugins) {
+      my $devices = $plugin->device;
+      my $pluginName = $plugin->name;
+      if ($devices) {
+         foreach my $device (@$devices) {
+            my @tokens = split('-', $device);
+            $pluginNames{$tokens[2]} = $pluginName;
+         }
+      }
+   }
+   return %pluginNames;
+}
+
+
+__END__
+
+=head1 NAME
+
+vicfg-scsidevs - display information about available LUNs. 
+
+=head1 SYNOPSIS
+  
+vicfg-scsidevs [<connection_options>] 
+   [--compact-list |
+    --device <device> |
+    --hba-device-list |
+    --hbas |
+    --help |
+    --list |
+    --query |
+    --uids |
+    --vihost <esx_host> |
+    --vmfs]
+
+=head1 DESCRIPTION
+
+The vicfg-scsidevs command displays information about available LUNs on ESX/ESXi 4.x hosts. 
+You can run vicfg-scsidevs --query and vicfg-scsidevs --vmfs against ESX/ESXi version 3.5. 
+The other options are supported only against ESX/ESXi version 4.0 and later.
+
+In previous releases of this command-line interface, the corresponding command is C<vicfg-vmhbadevs>.
+
+=head1 OPTIONS
+
+=over
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-scsidevs --help>
+for a list of all connection options.
+
+=item B<--compact-list | -c>
+
+Lists all logical devices, each on a single line, with limited information. 
+The information includes the device ID, device type, size, and plugin and device display name. 
+You can specify the C<--device> option to list information about a specific device. 
+
+=item B<--device | -d>
+
+Used with other options to specify the device for which you want information.
+
+=item B<--hba-device-list | -A>
+
+For each HBA, prints a mapping between the HBA and the devices for 
+which it provides paths.
+
+=item B<--hbas | -a>
+
+Prints HBA devices with identifying information. This includes 
+the adapter ID, driver ID, adapter UID, PCI, vendor, and model. 
+
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+
+=item B<--list | -l>
+
+Lists device information for all logical devices on this system. 
+The information includes the name (UUID), device type, display name, and multipathing plugin. 
+You can specify the C<--device> option to list information about a specific device. 
+
+=item B<--query | -q>
+
+Prints mappings in 2.5 compatibility mode to mimic a call to C<vmkpcidivy
+-q vmhba_devs>.
+
+
+=item B<--uids | -u>
+
+Lists the primary UID for each device and any other UIDs (aliases) for each UID. 
+You can specify the C<--device> option to list information about a specific device. 
+
+
+=item B<--vihost | -h>
+
+When you run a vCLI command with the --server option pointing to a 
+vCenter Server system, use -C<-vihost> to specify the ESX/ESXi host to run the command against. 
+
+=item B<--vmfs | -m>
+
+Prints mappings for each VMFS volume to its corresponding partition, 
+path to that partition, VMFS UUID, extent number, and volume names. 
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-scsidevs --help> for a list of common options including connection options.
+
+
+List all logical devices known on this system with detailed information:
+
+     vicfg-scsidevs <conn_options> -l
+
+List all logical devices with abbreviated information:
+
+     vicfg-scsidevs <conn_options> -c
+
+List all device unique identifiers with their primary name:
+
+     vicfg-scsidevs <conn_options> -u
+
+List a specific logical device with its detailed information:
+
+     vicfg-scsidevs <conn_options -l -d mpx.vmhba32:C0:T1:L0
+
+Print mappings for VMFS volumes to the corresponding partition, path
+to that partition, VMFS uuid, extent number and volume names:
+
+     vicfg-scsidevs <conn_options> -m
+
+Print HBA devices with identifying information:
+
+     vicfg-scsidevs <conn_options> -a
+
+Print a mapping between HBAs and the devices it provides paths to:
+
+     vicfg-scsidevs <conn_options> -A
+
+=cut

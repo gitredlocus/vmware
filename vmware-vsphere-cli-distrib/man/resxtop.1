@@ -1,0 +1,2066 @@
+.
+.de It
+.TP 0.5i
+.B "\\$1 "
+..
+.TH ESXTOP 1 "October 1, 2008" "VMware ESX 5.0" "VMware ESX Manual"
+.SH NAME
+esxtop, resxtop \- display ESX resource utilization statistics
+.Pp
+.SH SYNOPSIS
+.B esxtop
+.RB [ \- ]
+.RB [ h ]
+.RB [ v ]
+.RB [ b ]
+.RB [ s ]
+.RB [ a ]
+.RB [ c
+.IR configfile]
+.RB [ R
+.IR vm-support_dir_path]
+.RB [ d
+.IR delay]
+.RB [ n
+.IR iter ]
+
+.B resxtop
+.RB [ \- ]
+.RB [ h ]
+.RB [ v ]
+.RB [ b ]
+.RB [ s ]
+.RB [ a ]
+.RB [ c
+.IR configfile]
+.RB [ d
+.IR delay]
+.RB [ n
+.IR iter ]
+.RB [ -server 
+.IR server-name
+.RB [ -vihost 
+.IR host-name]] 
+.RB [ -portnumber 
+.IR socket-port] 
+.RB [ -username 
+.IR user-name] 
+.SH DESCRIPTION
+.B esxtop
+allows monitoring and collection of data for all system resources: 
+CPU, memory, disk and network. When used interactively, this data 
+can be viewed on different types of screens; one each for CPU 
+statistics, memory statistics, network statistics, disk adapter 
+statistics, disk device statistics, disk VM statistics and interrupt 
+statistics. In the batch mode, data can be  redirected to a file 
+for offline uses.
+
+Many esxtop statistics are computed as rates, e.g. CPU statistics
+%USED. A rate is computed based on the refresh interval, the time
+between successive snapshots. For example,
+%USED = ( CPU used time at snapshot 2 - CPU used time at snapshot 1 )
+/ time elapsed between snapshots. The default refresh interval can be
+changed by the command line option "-d", or the interactive command
+'s'. The return key can be pressed to force a refresh.
+
+In each screen, data is presented at different levels of aggregation.
+It is possible to drill down to expanded views of this data. Each
+screen provides different expansion options.
+
+It is possible to select all or some fields for which data collection
+is done. In the case of interactive use of esxtop, the order in which
+the selected fields are displayed can be selected.
+
+For more information, please refer to the official documentation, available at
+<http://www.vmware.com/pdf/vsphere4/r40_u1/vsp_40_u1_resource_mgmt.pdf>.
+Esxtop runs on the ESX Service Console. It can only be run by user
+.B root.
+It can be run in three different
+.B modes;
+.B interactive (default),
+.B batch
+and
+.B replay.
+.B Worlds
+in this document refer to ESX VMKernel schedulable entities,
+similar to processes in other operating systems.
+
+.B resxtop
+provides a fine-grain look at resource utilization of a specified 
+server in real time. Resxtop connects to the server using a user name and 
+password. Options --server, --vihost, --portnumber and --username can 
+be used to specify the connection parameters. The resxtop user will be 
+prompted to input the password. If resxtop connects to ESX 
+directly, --server specifies the ESX system name. If resxtop connects 
+to a VC server, --server specifies the VC server name and --vihost must 
+be used to specify the ESX host name registered in the VC server. 
+Resxtop can be run in two different
+.B modes 
+in the same way as esxtop;
+.B interactive (default)
+and
+.B batch.
+.SH Interactive Mode
+This is the default mode for esxtop. This mode displays 
+resource usage statistics in the following screens:
+.B CPU screen,
+.B memory screen,
+.B storage adapter screen,
+.B storage device screen,
+.B storage VM screen,
+.B network screen,
+.B interrupt screen,
+and
+.B power screen.
+A
+.B help
+menu is available for each screen.
+
+In this mode there are several command line options available.
+.SS "Command\-line Options"
+.It h
+Prints 
+.B help
+for esxtop command-line options.
+.It v
+Prints esxtop
+.B version
+number.
+.It s
+Tells esxtop to run in
+.B secure
+mode.  This disables the interactive command to change
+.B delay 
+between screen updates.
+.It a
+Show all statistics. This option overides ~/.esxtop50rc configuration 
+file setups and shows all statistics.
+.It c
+Load user-defined
+.B configuration
+file. Default configuration file is ~/.esxtop50rc.
+User can specify the filename to be used as configuration file.
+User-defined configuration file will be default file name 
+for saving configuration with 
+.IB W
+command.
+.It d
+Specifies the
+.B delay
+between screen updates.  Default is
+.B 5
+seconds. Minimum is
+.B 2
+seconds. 
+You can change this with the interactive command 's'. If a delay of
+less than 2 seconds is specified then the delay is set to 2 seconds.
+.It n
+Number of
+.B iterations.
+Update the display 'n' number of times and then exit. It is set to
+10000 by default.
+.SS "Common Statistics Description"
+Several statistics are displayed on the different screens while
+esxtop is running in interactive mode. Statistics listed in this
+section are
+.B common
+across all screens.
+.It "uptime"
+This first line found at the top of each of the esxtop
+screens displays the
+.B current time,
+.B time since last reboot and
+.B number of currently running Worlds.
+ On this first line
+.B CPU load averages 
+are also displayed for the CPU, storage and network screens.
+The load averages over the past
+.B 1,
+.B 5
+and
+.B 15
+minutes are displayed. Load averages take into account both running and
+ready-to-run Worlds. A load average of
+.B 1.00
+implies that all the physical CPUs are fully accounted for. A load average of
+.B 2.00
+implies that ESX may be in need of twice as many physical CPUs
+as currently available.
+ For the memory screen
+.B memory overcommit averages
+are also displayed on the first line.
+The memory overcommit averages over the past
+.B 1,
+.B 5
+and
+.B 15
+minutes are displayed. A memory overcommit average of
+.B 0.37
+implies that the memory is overcommit by
+.B 37%.
+.B Memory overcommit 
+is the ratio of total requested memory and the "managed memory" 
+minus 1. VMKernel computes the total requested memory as a sum of the following 
+components: (a) VM configured memory (or memory limit setting if set), (b) the 
+user world memory, (c) the reserved overhead memory.
+.SS "Common Interactive Commands"
+Several single-key commands are recognized while esxtop is running
+in interactive mode. Commands listed in this section are
+.B common
+across all screens. The command to specify the delay between
+updates is disabled if the
+.B s
+option has been given on the command line. All
+.B sorting
+interactive commands sort in
+.B descending
+order.
+.It "h\fR or \fB?"
+Displays a help menu for the current screen giving a brief summary
+of commands, and the status of secure mode.
+.It space
+Immediately updates the current screen.
+.It ^L
+Erases and redraws the current screen.
+.It "f\fR or \fBF"
+Displays a screen to add or remove statistics columns
+.B (fields)
+to or from the current screen. See below for more information.
+.It "o\fR or \fBO"
+Displays a screen to change
+.B order
+of statistics columns on the current screen.
+See below for more information.
+.It #
+Change the
+.B number
+of statistics rows to show. You will be prompted to
+enter the number. Any value greater than 0 overrides automatic
+determination of the number of rows to show, which is based on window
+size measurement. This number updated on any one of the esxtop
+screens will be used for all esxtop screens.
+.It L
+Change the display length of the name fields, which are "NAME" 
+for the CPU, memory and storage vm screens, "DEVICE" for the 
+sotrage device screen, "DNAME" for the network screen, "DEVICES"
+for the interrupt screen. You will be prompted to enter the number. 
+Any value greater than 0 overrides the default number of characters 
+of the name field to show. A value equals to 0 means the default 
+value applies.
+.It s
+Change the delay between updates.  You will be prompted to enter
+the delay time, in seconds, between updates. Fractional values
+are recognized down to microseconds. The default value is 5
+seconds. The minimum value is 2 seconds. This command is not
+available in secure mode.
+.It W
+Write current setup to 
+.IR ~/.esxtop50rc ,
+or to user-defined configuration file specified by 
+.IR -c
+option.
+This is the recommended way to write an esxtop configuration
+file. See below for more information.
+.It k
+Kill a world. (This command is only available in esxtop, not in resxtop.)
+.It q
+Quit.
+.It c
+switch to
+.B CPU
+resource utilization screen.
+.It m
+switch to
+.B memory
+resource utilization screen.
+.It d
+switch to
+.B storage (disk) adapter
+resource utilization screen.
+.It u
+switch to
+.B storage (disk) device
+resource utilization screen.
+.It v
+switch to
+.B storage (disk) VM
+resource utilization screen.
+.It n
+switch to
+.B network
+resource utilization screen.
+.It i
+switch to
+.B interrupt
+utilization screen.
+.It p
+switch to
+.B power
+utilization screen.
+.SS The Statistics Columns (fields) and Order Screens
+After pressing 
+.B f,
+.B F,
+.B o
+or
+.B O
+you will be shown a screen specifying the field order on the top line
+and short descriptions of the field contents. The field order string
+uses the following syntax: if the letter in the field string
+corresponding to a  field is upper case, the field will be displayed.
+This is also indicated by an asterisk in front of the field description.
+The order of the fields corresponds to the order of the letters in the
+string. 
+From the field select screen you can toggle the display of a field by
+pressing the corresponding letter. 
+From the order screen you may move a field to the left by pressing
+the corresponding upper case letter and to the right by pressing the
+lower case one.
+.
+.SS Configuration File
+esxtop reads its default configuration from
+.IR ~/.esxtop50rc
+or from specified file name with
+.B -c
+option.
+This configuration file contains nine lines. The first eight lines
+contain lower and upper case letters to specify which fields in what
+order are to be displayed on the
+.B CPU,
+.B memory,
+.B storage (disk) adapter,
+.B storage (disk) device,
+.B storage (disk) VM,
+.B network,
+.B interrupt,
+and
+.B power
+screens. The letters correspond to the letters in the Fields or Order
+screens for the respective esxtop screens. Editing this file by hand is
+not recommended. Select fields and order in a running esxtop process and
+save this file using the
+.I W
+interactive command. 
+.
+The last line contains information on the other options. Most important,
+if you have saved a configuration in secure mode, you will not get an
+insecure esxtop without removing the lower 's' from this last line of your
+.IR ~/.esxtop50rc .
+A digit specifies the delay time between updates.
+As in interactive mode, a lower 'c', 'm', 'd', 'u', 'v', 'n', 'i', and 'y' 
+determines the screen esxtop starts on.
+.
+.SS "CPU Screen"
+This screen displays
+.B server-wide
+and per
+.B Resource Pool/World
+CPU utilization statistics. By default, World CPU utilization statistics are aggregated
+into Resource Pools of Worlds. For Worlds belonging to a Virtual Machine, these Resource
+Pools correspond to running Virtual Machines. All other Worlds are logically aggregated
+into Resource Pools to save vertical window space.
+.PP
+.nf
+.B Statistics Descriptions
+.fi
+.It PCPU\ USED(%)
+This line displays the percentage CPU usage per
+.B PCPU,
+and the percentage CPU usage averaged over all PCPUs. A 
+.B PCPU
+refers to a physical hardware execution context -- a physical 
+CPU core if hyper-threading is unavailable or disabled, or 
+a logical CPU (aka LCPU or SMT thread) if hyper-threading is enabled.
+.B PCPU USED(%) 
+is the percentage of PCPU nominal frequency that was used 
+since the last screen update. PCPU USED(%) is the total sum 
+of %USED for Worlds that ran on this PCPU. Note that if 
+PCPU is running at frequency that is higher than its nominal 
+(rated) frequency, then PCPU USED(%) can be greater than 100%.
+Also, note that if a PCPU and its partner are busy when 
+hyper-threading is enabled, then each PCPU is accounted for 
+half of the CPU usage.
+
+.It PCPU\ UTIL(%)
+This line displays the percentage CPU utilization per
+.B PCPU,
+and the percentage CPU utilization averaged over all PCPUs. A 
+.B PCPU
+refers to a physical hardware execution context -- a physical 
+CPU core if hyper-threading is unavailable or disabled, or 
+a logical CPU (aka LCPU or SMT thread) if hyper-threading is enabled.
+.B UTIL(%)
+represents the raw PCPU utilization, that is the percentage 
+of real time that PCPU was not idle.
+
+USED(%) and UTIL(%) may be different due to power management 
+technologies or hyper-threading.
+
+.It CORE\ UTIL(%)
+This line displays the percentage utilization of each 
+.B core 
+and the average over all cores. It is displayed only 
+when hyper-threading is used. 
+In interactive mode, the percentage utilization of a core 
+is aligned with the percentage utilization of its first 
+logical CPU (aka LCPU or SMT thread). 
+
+A core is utilized, if either or both of its logical CPUs are utilized.
+The percentage utilization of a core is not the sum of 
+the percentage utilization of both logical CPUs on this core.
+
+.It CCPU(%)
+This line displays the percentages of total CPU time as reported
+by the ESX Service Console.
+.B us
+is for percentage user time,
+.B sy
+is for percentage system time,
+.B id
+is for percentage idle time and
+.B wa
+is for percentage wait time.
+.B cs/sec
+is for the context switches per second recorded by the ESX
+Service Console.
+.It ID
+The
+.B Resource Pool ID
+of the running World's Resource Pool or
+.B World ID
+of running World.
+.It GID
+The
+.B Resource Pool ID
+of running World's Resource Pool.
+.It LWID
+The
+.B Leader World ID
+of running World's Resource Pool.
+.It NAME
+The
+.B name
+of running World's Resource Pool or
+.B name
+of running World.
+.It NWLD
+The
+.B number of worlds
+in running World's Resource Pool. If a Resource Pool is expanded using the interactive
+command
+.B e
+(see interactive commands below) then NWLD for all the resulting Worlds
+belonging to the Resource Pool will be 1 (some Resource Pool like the
+.B console
+Resource Pool have only 1 member).
+.It %STATE\ TIMES
+This is a set of CPU statistics made up of the following
+percentages.
+.B Note
+that for a World, the percentages are a percentage of
+one physical CPU core.
+.It %USED
+The percentage of physical CPU core cycles used by the Resource Pool/World.
+
+%USED may depend on the frequency with which CPU core is running. When
+running with lower CPU core frequency, %USED can be smaller than %RUN.
+On CPUs which support turbo mode, CPU frequency can also be higher than
+nominal (rated) frequency, and in that case %USED can be larger than %RUN.
+.It %SYS
+The percentage of time spent in the ESX VMKernel on behalf
+of the Resource Pool/World to process interrupts and to perform other system
+activities. This time is part of
+.B used time
+used to calculate
+.B %USED
+above.
+.It %OVRLP
+The Percentage of system time that was spent on behalf of some other Resource Pool/World
+while Resource Pool/World was scheduled. This time is not included in the %SYS for
+Resource Pool/World. For example, if Resource Pool A was currently scheduled and a network
+packet for Resource Pool B was being processed by the ESX VMKernel, then the time
+spent doing so appears as %OVRLP for Resource Pool A and %SYS for Resource Pool B.
+.It %RUN
+Percentage of total time scheduled. This time does not account for hyper-threading and
+system time. Hence, on a hyper-threading enabled server, the %RUN can be twice as large as
+%USED.
+.It %WAIT
+The total percentage of time the Resource Pool/World spent in
+.B wait
+state.  I.e., the world is waiting for some VMKernel resource.
+.B Note
+that this percentage includes the percentage of time the
+Resource Pool/World was
+.B idle.
+.It %VMWAIT
+The total percentage of time the Resource Pool/World spent in
+.B blocked
+state waiting for events.
+.It %CSTP
+The percentage of time the Resource Pool/World spent in 
+.B ready, co-deschedule
+state. This statistic is for 
+.B internal to VMware use only.
+.It %IDLE
+The percentage of time the Resource Pool/World was idle. Subtracting this
+percentage from 
+.B %WAIT
+above gives you the percentage of time the Resource Pool/World was waiting
+on some event.
+.It %RDY
+The percentage of time the Resource Pool/World was ready to run.
+.It %MLMTD
+Percentage of time the ESX VMKernel deliberately did not
+run the Resource Pool/World because that would violate the Resource Pool/World's
+.B limit
+setting. Since the Resource Pool/World is ready to run when it is 
+prevented from running in this way, the %MLMTD (max limited) time 
+is included in %RDY time.
+.It %SWPWT
+Percentage of time the Resource Pool/World was waiting for the ESX VMKernel 
+swapping memory. The %SWPWT (swap wait) time is included in the %WAIT time.
+.It EVENT\ COUNTS/s
+This is a set of CPU statistics made up of the following, per second,
+event rates. These statistics are for
+.B internal to VMware use only.
+.It CPU\ ALLOC
+This is a set of CPU statistics made up of the following CPU allocation
+configuration parameters.
+.It AMIN
+Resource Pool/World attribute
+.B reservation.
+.It AMAX
+Resource Pool/World attribute
+.B limit.
+.It ASHRS
+Resource pool attribute 
+.B shares.
+.It SUMMARY\ STATS
+This is a set of CPU statistics made up of the following CPU
+configuration parameters and statistics.
+.It %LAT_C
+The percentage of time the Resource Pool/World was ready to run but was not 
+scheduled to run because of cpu resource contention.
+.It %LAT_M
+The percentage of time the Resource Pool/World was ready to run but was not 
+scheduled to run because of memory resource contention.
+.It %DMD
+The CPU demand in percentage. It represents the average active CPU load 
+in the past 1 minute.
+.It EMIN
+The Effective Min in MHz for the Resource Pool/World. The amount of 
+CPU resources guaranteed to the world if all the worlds on the system 
+start contending for CPU resources. ESX VMKernel dynamically calculates 
+the EMIN value for all worlds based on the resource settings 
+(Reservations, Limits and Shares) of all the resource pools and VMs 
+on a system.
+This statistic is for 
+.B internal to VMware use only.
+.It TIMER/s
+The timer rate the World is currently requesting for.
+.It AFFINITY BIT MASK
+Bit mask showing the current scheduling affinity for the World.
+.It CPU
+The physical or logical processor the World was found to be running on.
+.It HTSHARING
+current hyper-threading configuration.
+.It HTQ
+World is currently
+.B quaratined
+or not. 'N' implies no and 'Y' implies yes.
+.It POWER
+The current CPU power consumption in Watts accounted for a Resource Pool.
+.PP
+.nf
+.B Interactive Commands
+.fi
+.It e
+Expand/Rollup Resource Pool/Worlds CPU statistics. Allows viewing CPU
+resource utilization statistics broken down by individual Worlds
+belonging to a Resource Pool.
+.It U
+Sort Resource Pools/Worlds by
+.B Resource Pool %USED
+column. This is the default sort order.
+.It R
+Sort Resource Pools/Worlds by
+.B Resource Pool %RDY
+column.
+.It N
+Sort Resource Pools/Worlds by
+.B GID
+column.
+.It V
+Display
+.B VM
+instances only.
+.
+.SS "Memory Screen"
+This screen displays server-wide and per Resource Pool memory utilization
+statistics. As on the
+.B CPU
+screen, Resource Pools correspond to running Virtual Machines or Worlds
+that consume memory. Note the distinction between
+.B machine
+memory and
+.B physical
+memory in this section. 
+.B Physical 
+memory is the virtual hardware physical memory presented to the VM. 
+.B Machine 
+memory is actual physical RAM in the ESX host.
+.PP
+.nf
+.B Statistics Descriptions
+.fi
+.It PMEM\ (MB)
+This line displays the machine memory statistics for the server.
+All numbers are in
+.B megabytes.
+.B total
+is for the total amount of machine memory in the server,
+.B cos
+is for the amount of machine memory allocated to the ESX
+Service Console,
+.B vmk
+is for the amount of machine memory being used by the
+ESX VMKernel,
+.B other
+is for the amount of machine memory being used by
+everything other than the ESX Service Console and
+ESX VMKernel and
+.B free
+is for the amount of machine memory that is free.
+.It VMKMEM\ (MB)
+This line displays the machine memory statistics for the ESX
+Server VMKernel.
+All numbers are in
+.B megabytes.
+.B managed
+is for the total amount of machine memory managed by the ESX
+Server VMKernel,
+.B minfree
+is for the minimum amount of machine memory that the ESX
+VMKernel would like to keep free,
+.B rsvd
+is for the amount of machine memory that is currently reserved,
+.B ursvd
+is for the amount of machine memory that is currently unreserved
+and
+.B state
+is for the memory state as reported by the ESX VMKernel.
+Possible values are
+.B high, soft, hard and low.
+Here, high implies that the machine memory is not under any pressure and
+low implies that the machine memory is under pressure. While the host's 
+memory state is not used to determine whether memory should be reclaimed 
+from VMs (that decision is made at the resource pool level), it can affect 
+what mechanisms are used to reclaim memory if necessary. In the high and 
+soft states, ballooning is favored over swapping. In the hard and low 
+states, swapping is favored over ballooning.
+.It COSMEM\ (MB)
+This line displays the memory statistics as reported
+by the ESX Service Console.
+All numbers are in
+.B megabytes.
+.B free
+is for the amount of idle machine memory,
+.B swap_t
+is for the total swap configured,
+.B swap_f
+is for the amount of swap free,
+.B r/s
+is for the rate at which memory is swapped in from disk and
+.B w/s
+is for the rate at which  memory is swapped to disk.
+.It NUMA\ (MB)
+This line displays the ESX
+.B NUMA
+statistics. This line is only displayed if ESX
+is running on a NUMA server. All numbers are in
+.B megabytes.
+For each
+.B NUMA node
+in the server there are
+.B two
+statistics that are displayed. The first statistic is the
+.B total
+amount of machine memory in the NUMA node that is managed by
+ESX. The second statistic, that is displayed within
+round brackets, is the amount of machine memory in the node
+that is currently
+.B free.
+.It PSHARE\ (MB)
+This line displays the ESX
+.B page-sharing
+statistics.
+All numbers are in
+.B megabytes.
+.B shared
+is for the amount of physical memory that is being
+shared,
+.B common
+is for the amount of machine memory that is 
+common across World(s) and
+.B saving
+is for the amount of machine memory that is saved
+due to page-sharing. The monitor maps guest physical memory to machine memory.
+VMKernel selects to map guest physical pages with the same content to the same
+machine page. In other words, those guest physical pages are sharing the same
+machine page. This kind of sharing can happen within the same VM or among the VMs.
+Since each VM's "shared" memory measures guest physical memory, the host's
+"shared" memory may be larger than the total amount of machine memory if memory
+is overcommitted. "saving" illustrates the effectiveness of page sharing for
+saving machine memory.
+.It SWAP\ (MB)
+This line displays the ESX
+.B swap
+usage statistics.
+All numbers are in
+.B megabytes.
+.B curr
+is for the current swap usage,
+.B rclmtgt
+is for where ESX expects the relaimed memory using swapping and compression to be,
+.B r/s
+is for the rate at which memory is swapped in by ESX
+from disk and
+.B w/s
+is for the rate at which memory is swapped to disk by the ESX
+Server.
+
+Note that 
+.B rclmtgt
+is the total target for both swapping and compression.
+We should compare it against the sum of the
+.B curr
+swapped memory and the
+.B saved
+memory due to memory compression shown in the
+.B ZIP
+line.
+
+.It ZIP\ (MB)
+This line displays the ESX
+.B memory compression
+statistics.
+All numbers are in
+.B megabytes.
+.B zipped
+is for the total compressed physical memory,
+.B saved
+is for the saved memory by compression. 
+.It MEMCTL\ (MB)
+This line displays the
+.B memory balloon
+statistics.
+All numbers are in
+.B megabytes.
+.B curr
+is for the total amount of physical memory reclaimed using the vmmemctl
+modules,
+.B target
+is for the total amount of physical memory ESX would like to reclaim
+using the vmmemctl modules and
+.B max
+is for the maximum amount of physical memory ESX can reclaim using
+the vmmemctl modules.
+.It GID
+Resource Pool
+.B ID
+.It LWID
+The
+.B Leader World ID
+of Resource Pool.
+.It NAME
+Resource Pool
+.B name
+.It AMIN
+Resource Pool attribute 
+.B reservation.
+.It AMAX
+Resource Pool attribute 
+.B limit.
+.It ASHRS
+Resource Pool attribute 
+.B shares.
+.It NHN
+Current
+.B Home Node
+for Resource Pool. This statistic is only applicable on NUMA systems.
+.It NMIG
+Number of NUMA migrations between two snapshots. It includes balance 
+migration, inter-node VM swaps performed for locality balancing 
+and load balancing. This statistic is only applicable on NUMA systems.
+.It NRMEM\ (MB)
+Current amount of
+.B remote memory
+being accessed by Resource Pool. This statistic is only applicable on NUMA systems.
+.It NLMEM\ (MB)
+Current amount of
+.B local memory
+being accessed by Resource Pool. This statistic is only applicable on NUMA systems.
+.It N%L
+Current percentage memory being accessed by Resource Pool that is
+.B local.
+This statistic is only applicable on NUMA systems.
+.It GST_NDx\ (MB)
+The guest memory being allocated for Resource Pool on NUMA node x. 
+"x" is the node number.
+This statistic is only applicable on NUMA systems.
+.It OVD_NDx\ (MB)
+The VMM overhead memory being allocated for Resource Pool on NUMA node x.
+"x" is the node number.
+This statistic is only applicable on NUMA systems.
+.It MEMSZ\ (MB)
+The amount of physical memory
+.B allocated
+to a Resource Pool.
+.It GRANT\ (MB)
+The amount of physical memory
+.B granted
+to a Resource Pool.
+It is the mapped guest physical memory. GRANT - SHRDSVD is the 
+consumed host machine memory. For a user world, it is the amount of virtual memory 
+that is backed by machine memory.
+.It SZTGT\ (MB)
+The amount of machine memory the ESX VMKernel wants to allocate to Resource Pool. 
+It includes the overhead memory for a VM.
+This is an internal counter, which is computed by ESX memory scheduler. Usually, 
+there is no need to worry about this. Roughly speaking, 
+.B SZTGT 
+of all the VMs is 
+computed based on the resource usage, available memory, and the 
+"limit/reservation/shares" settings. This computed 
+.B SZTGT 
+is compared against the current memory consumption plus overhead memory for a VM to 
+determine the swap and balloon target, so that VMKernel may balloon or swap 
+appropriate amount of memory to meet its memory demand. 
+.It TCHD\ (MB)
+The
+.B working set
+estimate for Resource Pool. VMKernel estimates active memory usage for a VM by 
+sampling a random subset of the VM's memory resident in machine memory to detect the 
+number of memory reads and writes. VMKernel then scales this number by the size of 
+VM's configured memory and averages it with previous samples. Over time, this average 
+will approximate the amount of active memory for the VM.
+.B Note
+that ballooned memory is considered inactive, so, it is excluded from 
+.B TCHD.
+.It TCHD_W\ (MB)
+The
+.B write working set
+estimate for Resource Pool.
+.It %ACTV
+Percentage of guest physical memory that is being referenced
+by the guest. This is an
+.B instantaneous
+value.
+.It %ACTVS
+Percentage of guest physical memory that is being referenced
+by the guest. This is a
+.B slow
+moving average.
+.It %ACTVF
+Percentage of guest physical memory that is being referenced
+by the guest. This is a
+.B fast
+moving average.
+.It %ACTVN
+Percentage of guest physical memory that will be referenced
+by the guest. This is an estimation. This statistic is for 
+.B internal to VMware use only.
+.It MCTL?
+memory balloon driver is installed or not. 'N' implies
+no and 'Y' imples yes.
+.It MCTLSZ\ (MB)
+The amount of physical memory reclaimed from Resource Pool
+by way of
+.B ballooning.
+This can be called "balloon size". A large 
+.B MCTLSZ
+ means lots of this VM's guest physical memory is "stolen" to decrease host memory 
+pressure. This usually is not a problem, because balloon driver tends to smartly 
+steal guest physical memory that cause little performance problems.
+.It MCTLTGT\ (MB)
+The amount of physical memory ESX would like to reclaim from Resource Pool
+by way of ballooning.
+This is an internal counter, which is computed by ESX memory scheduler. Usually, 
+there is no need to worry about this.
+.It MCTLMAX\ (MB)
+The
+.B maximum
+amount of physical memory ESX can reclaim from Resource Pool by way of ballooning.
+This maximum is dependent on guest operating system type.
+.It SWCUR\ (MB)
+Current swap usage by Resource Pool.
+.It SWTGT\ (MB)
+Where ESX expectd the Swap usage by the Resource Pool to be.
+.It SWR/s\ (MB)
+Rate at which memory is being swapped in by ESX from disk for the Resource Pool.
+When a VM is requesting machine memory to back its guest physical memory that was 
+swapped out to disk, VMKernel reads in the page. The swap-in operation is synchronous.
+.It SWW/s\ (MB)
+Rate at which Resource Pool memory is being swapped to disk by ESX. This stats 
+refers to the VMKernel swapping, not the guest swapping.
+.It LLSWR/s\ (MB)
+Rate at which memory is faulted from host cache.
+.It LLSWW/s\ (MB)
+Rate at which memory is written to the host cache from various sources.
+.It CPTRD\ (MB)
+Amount of data read from checkpoint file.
+.It CPTTGT\ (MB)
+Size of checkpoint file.
+.It ZERO\ (MB)
+Resource Pool physical pages that are zeroed.
+.It SHRD\ (MB)
+Resource Pool physical pages that are shared. VMKernel page sharing module scans 
+and finds guest physical pages with the same content and backs them with the same 
+machine page. It accounts the total guest physical pages that are shared by 
+the page sharing module.
+.It SHRDSVD\ (MB)
+Machine pages that are saved due to Resource Pool shared pages. Because a machine 
+page is shared by multiple guest physical pages, we only charge "1/ref" page as 
+the consumed machine memory for each of the guest physical pages, where "ref" is 
+the number of references. So, the saved machine memory will be "1 - 1/ref" page.
+.It COWH\ (MB)
+This statistic is for 
+.B internal to VMware use only.
+.It OVHDUW\ (MB)
+Current space overhead for the user world. This statistic is for 
+.B internal to VMware use only.
+.It OVHD\ (MB)
+Current space overhead for Resource Pool. It includes the overhead memory consumed 
+by the monitor, the VMkernel and the vmx user world. 
+.It OVHDMAX\ (MB)
+Maximum space overhead that may be incurred by Resource Pool. It is the overhead 
+memory a VM wants to consume in the future. This amount of reserved overhead memory 
+includes the overhead memory reserved by the monitor, the VMkernel, and the vmx 
+user world.
+.It MEM\ Committed\ (MB)
+This is a set of memory statistics made up of minimum memory 
+commitment target, current memory commitment target, charged memory 
+commitment, and pages per share. These statistics are for
+.B internal to VMware use only.
+.It CACHESZ\ (MB)
+Compression memory cache size.
+.It CACHEUSD\ (MB)
+Used compression memory cache.
+.It ZIP/s\ (MB/s)
+Compressed memory per second.
+.It UNZIP/s\ (MB/s)
+Decompressed memory per second.
+.PP
+.nf
+.B Interactive Commands
+.fi
+.It V
+Display
+.B VM
+instances only. 
+.It M
+Sort Resource Pools by
+.B Resource Pool MEMSZ
+column. This is the default sort order.
+.It B
+Sort Resource Pools by
+.B Resource Pool MCTLSZ
+column.
+.It N
+Sort Resource Pools by
+.B GID
+column.
+.
+.SS "Storage Adapter Screen"
+This screen displays server-wide storage utilization
+statistics. On this screen statistics are aggregated per
+storage
+.B adapter
+by default. Statistics can also be viewed per storage
+.B path.
+See below for more information.
+.PP
+.nf
+.B Statistics Descriptions
+.fi
+.It ADAPTR
+The
+.B name
+of the storage adapter.
+.It PATH
+The storage
+.B path
+name. This name is only visible if the corresponding adapter
+is expanded. See interactive 
+command 'e' below. 
+When the statistics are expanded to path level, esxtop shows 
+the path statistics.
+.It NPTHS
+The
+.B number of paths.
+.It AQLEN
+The
+.B storage adapter queue depth.
+This is the maximum number of ESX VMKernel 
+active commands that the adapter driver is configured
+to support.
+.It CMDS/s
+The number of
+.B commands
+completed per second.
+.It READS/s
+The number of
+.B read commands
+completed per second.
+.It WRITES/s
+The number of
+.B write commands
+completed per second.
+.It MBREAD/s
+The megabytes
+.B read
+per second.
+.It MBWRTN/s
+The megabytes
+.B written
+per second.
+.It RESV/s
+The number of SCSI reservations per second.
+.It CONS/s
+The number of SCSI reservation conflicts per second.
+.It DAVG/cmd
+The
+.B average device latency (millisecs)
+per command. It is a good indicator of performance of the backend storage. 
+If IO latencies are suspected to be causing performance problems, 
+.B DAVG 
+should be examined. Compare IO latencies with corresponding data from the 
+storage array. If they are close, check the array for misconfiguration or 
+faults. If not, compare DAVG with corresponding data from points in 
+between the array and the ESX Server, e.g., FC switches. 
+If this intermediate data also matches 
+.B DAVG 
+values, it is likely that the storage is under-configured for the application. 
+Adding disk spindles or changing the RAID level may help in such cases.
+.It KAVG/cmd
+The
+.B average ESX VMKernel latency (millisecs)
+per command. It's value should be very small in comparison to the 
+.B DAVG 
+value and should be close to zero. When there is a lot of queuing in ESX, 
+.B KAVG can be as high, or even higher than 
+.B DAVG.
+.It GAVG/cmd
+The
+.B average Guest OS latency (millisecs)
+per command.
+.It QAVG/cmd
+The
+.B average queue latency (millisecs)
+per command. Response time is the sum of the time spent in queues in the storage 
+stack and the service time spent by each resource in servicing the request. The 
+largest component of the service time is the time spent in retrieving data from 
+physical storage. If 
+.B QAVG 
+is high, another line of investigation is to examine the queue depths at each 
+level in the storage stack.
+.It DAVG/rd
+The
+.B average device read latency (millisecs)
+per read.
+.It KAVG/rd
+The
+.B average ESX VMKernel read latency (millisecs)
+per read.
+.It GAVG/rd
+The
+.B average Guest OS read latency (millisecs)
+per read.
+.It QAVG/rd
+The
+.B average queue read latency (millisecs)
+per read.
+.It DAVG/wr
+The
+.B average device write latency (millisecs)
+per write.
+.It KAVG/wr
+The
+.B average ESX VMKernel write latency (millisecs)
+per write.
+.It GAVG/wr
+The
+.B average Guest OS write latency (millisecs)
+per write.
+.It QAVG/wr
+The
+.B average queue write latency (millisecs)
+per write.
+.It FCMDS/s
+Failed commands per second.
+.It FREAD/s
+Failed
+.B read
+commands per second.
+.It FWRITE/s
+Failed
+.B write
+commands per second.
+.It FMBRD/s
+The megabytes
+.B  read
+per second by failed commands.
+.It FMBWR/s
+The megabytes
+.B  written
+per second by failed commands.
+.It FRESV/s
+The number of
+.B  reserve
+commands failed per second.
+.It ABRTS/s
+The number of commands
+.B aborted
+per second. It can indicate that the storage system is unable to meet the 
+demands of the guest operating system. Abort commands are issued by the 
+guest when the storage system has not responded within an acceptable amount 
+of time, e.g. 60 seconds on some windows OS's. Also, resets issued by a 
+guest OS on its virtual SCSI adapter will be translated to aborts of all the 
+commands outstanding on that virtual SCSI adapter.
+If multiple paths are connected to the same lun, 
+this statistic is 
+.B per path 
+when it is expanded to luns. 
+.It RESETS/s
+The number of commands
+.B reset
+per second.
+.It PAECMD/s  
+The number of 
+.B PAE commands
+per second. It may point to hardware misconfiguration. When the guest 
+allocates a buffer, the vmkernel assigns some machine memory, which might 
+come from a .highmem. region. If you have a driver that is not PAE-aware, 
+then this counter is updated if accesses to this memory region result in 
+copies by the vmkernel into a lower memory location before issuing the 
+request to the adapter. This might happen if you do not populate the DIMMs 
+with low memory first, then you may artificially cause .highmem. memory 
+accesses.
+.It PAECP/s 
+The number of 
+.B PAE copies
+per second.
+.It SPLTCMD/s 
+The number of
+.B split commands
+per second. Commands can be split when they reach the vmkernel. This might 
+impact perceived latency to the guest. The guest may be issuing commands of 
+large block sizes which have to be broken down by the vmkernel. Splitting 
+can also occur when IOs fall across partition boundaries but these are 
+easily differentiated from the splitting as a result of the IO size.
+.It SPLTCP/s
+The number of
+.B split copies
+per second.
+.PP
+.nf
+.B Interactive Commands
+.fi
+.It e
+Expand/Rollup storage
+.B adapter
+statistics.
+Allows viewing storage resource utilization statistics
+broken down by individual
+.B paths
+belonging to an expanded storage adapter. You will be
+prompted to enter the adapter name.
+.It r
+Sort by
+.B READS/s
+column.
+.It w
+Sort by
+.B WRITES/s
+column.
+.It R
+Sort by
+.B MBREAD/s
+column.
+.It T
+Sort by
+.B MBWRTN/s
+column.
+.It N
+Sort first by
+.B ADAPTER
+column, then by
+.B PATH
+column.
+This is the default sort order.
+.
+.SS "Storage Device Screen"
+This screen displays server-wide storage utilization
+statistics. On this screen statistics are aggregated per
+storage
+.B device
+by default. Statistics can also be viewed per 
+.B path,
+.B world,
+or
+.B partition.
+See below for more information.
+.PP
+.nf
+.B Statistics Descriptions
+.fi
+.It DEVICE
+The
+.B name
+of the storage device.
+.It PATH
+The path name. This name is only visible if the corresponding 
+device is expanded to paths. See interactive command 'p' below.
+.It WORLD 
+The world id. This id is only visible if the corresponding device
+is expanded to worlds. See interactive command 'e' below.
+The world statistics are per world per device.
+.It PARTITION
+The partition id. This id is only visible if the corresponding 
+device is expanded to partitions. See interactive command 't' below.
+.It NPH 
+The
+.B number of paths.
+.It NWD 
+The
+.B number of worlds.
+.It NPN
+The
+.B number of partitions.
+.It SHARES
+The
+.B number of shares.
+This statistic is only applicable to worlds.
+.It BLKSZ
+The
+.B block size
+in bytes. 
+.It NUMBLKS
+The
+.B number of blocks 
+of the device.
+.It DQLEN
+The
+.B storage device queue depth.
+This is the maximum number of ESX VMKernel 
+active commands that the device is configured
+to support.
+.It WQLEN
+The
+.B World queue depth.
+This is the maximum number of ESX VMKernel active
+commands that the World is allowed to have. 
+.B Note
+that this is a per device maximum for the World.
+It is valid only if the corresponding device is expanded to worlds.
+.It ACTV
+The number of commands in the ESX VMKernel that
+are currently
+.B active.
+This statistic is only applicable to worlds and devices.
+.It QUED
+The number of commands in the ESX VMKernel that
+are currently
+.B queued.
+This statistic is only applicable to worlds and devices. Queued commands 
+are commands waiting for an open slot in the queue. A large number of 
+queued commands may be an indication that the storage system is 
+overloaded. A sustained high value for the QUED counter signals a storage 
+bottleneck which may be alleviated by increasing the queue depth. Check 
+that LOAD < 1 after increasing the queue depth. This should also be 
+accompanied by improved performance in terms of increased cmd/s.
+.It %USD
+The
+.B percentage
+of queue depth 
+.B used
+by ESX VMKernel active commands.
+This statistic is only applicable to worlds and devices. 
+.B %USD 
+is a measure of how many of the available command queue "slots" 
+are in use. Sustained high values indicate the potential for queueing; 
+you may need to adjust the queue depths for system's HBAs if 
+.B QUED 
+is also found to be consistently > 1 at the same time. Queue sizes can 
+be adjusted in a few places in the IO path and can be used to alleviate 
+performance problems related to latency. 
+.It LOAD
+The
+.B ratio
+of ESX VMKernel active commands plus ESX VMKernel queued commands
+.B to
+queue depth. 
+This statistic is only applicable to worlds and devices.
+.It CMDS/s
+The number of
+.B commands
+issued per second.
+.It READS/s
+The number of
+.B read commands
+issued per second.
+.It WRITES/s
+The number of
+.B write commands
+issued per second.
+.It MBREAD/s
+The megabytes
+.B read
+per second.
+.It MBWRTN/s
+The megabytes
+.B written
+per second.
+.It RESV/s
+The number of SCSI reservations per second.
+.It CONS/s
+The number of SCSI reservation conflicts per second.
+.It DAVG/cmd
+The
+.B average device latency (millisecs)
+per command.
+.It KAVG/cmd
+The
+.B average ESX VMKernel latency (millisecs)
+per command.
+.It GAVG/cmd
+The
+.B average Guest OS latency (millisecs)
+per command.
+.It QAVG/cmd
+The
+.B average queue latency (millisecs)
+per command.
+.It DAVG/rd
+The
+.B average device read latency (millisecs)
+per read.
+.It KAVG/rd
+The
+.B average ESX VMKernel read latency (millisecs)
+per read.
+.It GAVG/rd
+The
+.B average Guest OS read latency (millisecs)
+per read.
+.It QAVG/rd
+The
+.B average queue read latency (millisecs)
+per read.
+.It DAVG/wr
+The
+.B average device write latency (millisecs)
+per write.
+.It KAVG/wr
+The
+.B average ESX VMKernel write latency (millisecs)
+per write.
+.It GAVG/wr
+The
+.B average Guest OS write latency (millisecs)
+per write.
+.It QAVG/wr
+The
+.B average queue write latency (millisecs)
+per write.
+.It ABRTS/s
+The number of commands
+.B aborted
+per second.
+.It RESETS/s
+The number of commands
+.B reset
+per second.
+.It PAECMD/s  
+The number of 
+.B PAE commands
+per second.
+This statistic is only applicable to paths.
+.It PAECP/s 
+The number of 
+.B PAE copies
+per second.
+This statistic is only applicable to paths.
+.It SPLTCMD/s 
+The number of
+.B split commands
+per second.
+This statistic is only applicable to paths.
+.It SPLTCP/s
+The number of
+.B split copies
+per second.
+This statistic is only applicable to paths.
+.It CLONE_RD
+The number of 
+.B clone read
+commands.
+.It CLONE_WR
+The number of
+.B clone write
+commands.
+.It CLONE_F
+The number of 
+.B failed clone
+commands.
+.It MBC_RD/s
+The megabytes
+.B clone read
+per second.
+.It MBC_WR/s
+The megabytes
+.B clone written
+per second.
+.It ATS
+The number of 
+.B ats
+commands.
+.It ATSF
+The number of 
+.B failed ats
+commands.
+.It ZERO
+The number of
+.B zero
+commands.
+.It ZERO_F
+The number of
+.B failed zero
+commands.
+.It MBZERO/s
+The megabytes
+.B zeroed
+per second.
+.It CAVG/suc
+The
+.B average clone latency (millisecs)
+per successful command.
+.It CAVG/f
+The
+.B  average clone latency (millisecs)
+per failed command.
+.It AAVG/suc
+The
+.B average ats latency (millisecs)
+per successful command.
+.It AAVG/f
+The
+.B average ats latency (millisecs)
+per failed command.
+.It ZAVG/suc
+The
+.B average zero latency (millisecs)
+per successful command.
+.It ZAVG/f
+The
+.B average zero latency (millisecs)
+per failed command.
+.PP
+.nf
+.B Interactive Commands
+.fi
+.It e
+Expand/Rollup storage
+.B world
+statistics.
+Allows viewing storage resource utilization statistics
+broken down by individual
+.B worlds
+belonging to an expanded storage device. You will be
+prompted to enter the device name. The statistics are 
+per world per device.
+.It P
+Expand/Rollup storage
+.B path
+statistics. Allows viewing storage resource utilization
+statistics broken down by individual
+.B paths
+belonging to an expanded storage device. You will be
+prompted to enter the device name.
+.It t
+Expand/Rollup storage
+.B partition
+statistics. Allows viewing storage resource utilization
+statistics broken down by individual
+.B partitions
+belonging to an expanded storage device. You will be
+prompted to enter the device name.
+.It r
+Sort by
+.B READS/s
+column.
+.It w
+Sort by
+.B WRITES/s
+column.
+.It R
+Sort by
+.B MBREAD/s
+column.
+.It T
+Sort by
+.B MBWRTN/s
+column.
+.It N
+Sort first by
+.B DEVICE
+column, then by
+.B PATH/WORLD/PARTITION
+column.
+This is the default sort order.
+.
+.SS "Storage VM Screen"
+This screen displays VM-centric storage statistics. On this 
+screen, statistics are aggregated on a 
+.B per-resource-pool
+basis by default. One VM has one corresponding resource pool, 
+so, they are equivalent to per-VM statistics. 
+Statistics can also be viewed on a  
+.B per-vscsi-device
+basis.
+.PP
+.nf
+.B Statistics Descriptions
+.fi
+.It ID
+The
+.B Resource Pool ID
+of the Resource Pool or
+.B Vscsi ID
+of Vscsi Device.
+.It GID
+The
+.B Resource Pool ID
+of Resource Pool.
+.It VMNAME
+The
+.B name
+of Resource Pool.
+.It VDEVNAME 
+The
+.B name
+of the Virtual Device.
+.It NVDISK 
+The number of
+.B vscsi devices.
+.It CMDS/s
+The number of
+.B commands
+issued per second.
+.It READS/s
+The number of
+.B read commands
+issued per second.
+.It WRITES/s
+The number of
+.B write commands
+issued per second.
+.It MBREAD/s
+The megabytes
+.B read
+per second.
+.It MBWRTN/s
+The megabytes
+.B written
+per second.
+.It LAT/rd
+The
+.B average latency (millisecs)
+per read.
+.It LAT/wr
+The
+.B average latency (millisecs)
+per write.
+.PP
+.nf
+.B Interactive Commands
+.fi
+.It e
+Expand/Rollup storage
+.B vscsi device
+statistics.
+Allows viewing storage resource utilization statistics
+broken down by individual
+.B vscsi devices
+belonging to a group. You will be
+prompted to enter the group id. The statistics are
+per 
+.B vscsi device.
+.It r
+Sort by
+.B READS/s
+column.
+.It w
+Sort by
+.B WRITES/s
+column.
+.It R
+Sort by
+.B MBREAD/s
+column.
+.It T
+Sort by
+.B MBWRTN/s
+column.
+.It N
+Sort first by
+.B VM
+column, then by
+.B VSCSI
+column.
+This is the default sort order.
+.
+.SS "Network Screen"
+This screen displays server-wide network utilization statistics.
+On this screen statistics are arranged per
+.B port
+per configured
+.B virtual network device.
+For
+.B physical NIC
+statistics, see the row corresponding to the port that the physical
+NIC is connected to. For
+.B virtual NIC
+configured in a particular Virtual Machine statistics, see the row
+corresponding to the port that the virtual NIC is connected to.
+.PP
+.nf
+.B Statistics Descriptions
+.fi
+.It PORT-ID
+The virtual network device
+.B port id.
+.It UPLINK
+.B Y
+implies the corresponding port is an uplink.
+.B N
+implies it is not.
+.It UP
+.B Y
+implies the corresponding link is up.
+.B N
+implies it is not.
+.It SPEED
+The
+.B link speed
+in MegaBits per second.
+.It FDUPLX
+.B Y
+implies the corresponding link is operating at full duplex.
+.B N
+implies it is not.
+.It USED-BY
+The virtual network device port
+.B user.
+.It TEAM-PNIC
+The physical NIC name for the team uplink.
+.It DNAME
+The virtual network device
+.B name.
+.It PKTTX/s
+The number of packets
+.B transmitted
+per second.
+.It PKTRX/s
+The number of packets
+.B received
+per second.
+.It MbTX/s
+The MegaBits
+.B transmitted
+per second.
+.It MbRX/s
+The MegaBits
+.B received
+per second.
+.It %DRPTX
+The percentage of
+.B transmit
+packets
+.B dropped. 
+.It %DRPRX
+The percentage of
+.B receive
+packets
+.B dropped.
+.It ACTN/s
+Number of 
+.B actions 
+per second. This statistic is for 
+.B internal to VMware use only.
+.It PKTTXMUL/s
+The number of multicast packets
+.B transmitted
+per second.
+.It PKTRXMUL/s
+The number of multicast packets
+.B received
+per second.
+.It PKTTXBRD/s
+The number of broadcast packets
+.B transmitted
+per second.
+.It PKTRXBRD/s
+The number of broadcast packets
+.B received
+per second.
+.
+.PP
+.nf
+.B Interactive Commands
+.fi
+.It T
+Sort by
+.B MbTX/s
+column.
+.It R
+Sort by
+.B MbRX/s
+column.
+.It t
+Sort by
+.B PKTTX/s
+column.
+.It r
+Sort by
+.B PKTRX/s
+column.
+.It N
+Sort by
+.B PORT ID
+column. This is the default sort order.
+.
+.SS "Interrupt Screen"
+This screen displays interrupt utilization statistics.
+On this screen statistics are arranged per
+.B interrupt vector.
+.PP
+.nf
+.B Statistics Descriptions
+.fi
+.It VECTOR
+The 
+.B interrupt vector id.
+.It COUNT/s
+The 
+.B total number of interrupts per second
+across all the CPUs. It measures how often an interrupt is raised on the
+.B device.
+E.g., If you have 2 CPUs, COUNT/s = COUNT_0 + COUNT_1.
+COUNT_0 and COUNT_1 are described below. 
+.It COUNT_x
+The 
+.B number of interrupts per second 
+on CPU 'x'. This is a per CPU counter. Comparing "COUNT_x" for the same 
+interrupt vector on different CPUs can tell us how balanced the 
+interrupts are scheduled across all the CPUs.
+.It TIME/int
+The 
+.B average processing time 
+in microseconds per interrupt. It is the average for all the interrupts 
+of the same vector.
+.It TIME_x
+The 
+.B average processing time 
+in microseconds per interrupt on CPU 'x'. It averages only the 
+interrupts raised on CPU 'x'.
+.It DEVICES
+The devices that use the interrupt vector. 
+If the interrupt vector is not enabled for the device, its name 
+is enclosed in "<>", e.g. "<VMK device>".
+.
+.SS "Power Screen"
+This screen displays CPU Power utilization statistics. On this 
+screen statistics are arranged per
+.B PCPU.
+A 
+.B PCPU
+refers to a physical hardware execution context -- a physical 
+CPU core if hyper-threading is unavailable or disabled, or 
+a logical CPU (aka LCPU or SMT thread) if hyper-threading is enabled.
+.PP
+.nf
+.B Statistics Descriptions
+.fi
+.It Power\ Usage
+The current total power usage in Watts.
+.It Power\ Cap
+The total power cap in Watts.
+.It %USED
+The percentage of PCPU nominal frequency that was used 
+since the last screen update. It is the same as 
+.B PCPU\ USED(%) 
+shown in the CPU Screen.
+.It %UTIL
+The raw PCPU utilization, that is the percentage of real 
+time that PCPU was not idle. It is the same as  
+.B PCPU\ UTIL(%) 
+shown in the CPU Screen.
+.It %Cx
+The percentage of time the PCPU spent in C-State 'x'.
+.It %Px
+The percentage of time the PCPU spent in P-State 'x'.
+.It %Tx
+The percentage of time the PCPU spent in T-State 'x'.
+.
+.PP
+.nf
+.
+.SH Batch Mode
+Allows collecting and saving resource utilization statistics
+in a file. Running in this mode is a two step process.
+ Step 
+.B one
+requires running esxtop in interactive mode, switching to each of
+the four available screens, selecting the columns on each screen
+you are interested in and saving this configuration in the
+.IR ~/.esxtop50rc
+file using the
+.I W
+interactive command. See
+.B Interactive Mode
+above.
+.B Note
+that the global stats are always available in batch mode.
+ Step 
+.B two
+requires running esxtop in batch mode and redirecting the output to
+a file. This may be done as follows:
+.B esxtop -b > foo.csv.
+.B Note
+that the file name needs to have a 
+.B .csv
+extension. Esxtop does not enforce this, but post-processing tools
+mentioned next require this.
+ Statistics collected in batch mode may be post-processed using
+such
+.B MS Windows
+applications like
+.B Excel
+and
+.B Perfmon.
+ In this mode, esxtop will not accept
+interactive commands. Esxtop in batch mode runs until it produces the
+number of iterations requested (see
+command-line option
+.B n
+below for more details) or until killed using
+.B CTRL c.
+ In this mode there are several command line options available.
+.SS "Command\-line Options"
+.It b
+Run esxtop in Batch mode.
+.It d
+Specifies the
+.B delay
+between statistics snapshots.  Default is
+.B 5
+seconds. Minimum is
+.B 2
+seconds. If a delay of less than 2 seconds is specified then the
+delay is set to 2 seconds.
+.It n
+Number of
+.B iterations.
+Collect and save statistics this number of times and then exit.
+.
+.SH Replay Mode
+Replays resource utilization statistics collected using
+.B vm-support
+(see vm-support man page for more information), resxtop does not 
+support replay mode. Running in this mode is a two step process.
+ Step 
+.B one
+requires running vm-support in
+.B snapshot mode
+on the ESX Service Console. This may be done as follows:
+.B vm-support -S -d duration -i interval.
+The resulting zipped tar file needs to be un-zipped and un-tar'ed
+before use by esxtop replay mode.
+ Step 
+.B two
+requires running esxtop in replay mode. This may be done as follows:
+.B esxtop -R 
+.I vm-support_dir_path.
+.B Note
+that it is not required to run esxtop replay mode on the ESX
+Service Console.
+ In replay mode, esxtop needs to be of the same verison as
+that of ESX to avoid compatibility problem.
+ Replay mode can be run to produce
+.B Batch Mode
+style output (see command-line option
+.B b
+below for more information).
+ In replay mode, esxtop accepts the same set of interactive commands
+as in
+.B Interactive Mode.
+Esxtop in replay mode runs until there are no more vm-support
+collected snapshots to be read or esxtop produces the number of
+iterations requested (see command-line option
+.B n
+below for more details).
+ In this mode there are several command line options available.
+.SS "Command\-line Options"
+.It R
+Specifies the path to the vm-support collected snapshot's directory.
+.It b
+Run esxtop in Batch mode.
+.It d
+Specifies the
+.B delay
+between screen updates.  Default is
+.B 5
+seconds. Minimum is
+.B 2
+seconds. If a delay of less than 2 seconds is specified then the
+delay is set to 2 seconds.
+.It n
+Number of
+.B iterations.
+Update the display this number of times and then exit.
+.
+.SH EXPERIMENTAL FEATURES
+.SS Export and Import Entities
+This feature allows users show only the entities that they are 
+interested in, such as groups, devices, adapters, ports, 
+interrupt vectors, etc. The ability of selecting interesting 
+entities can also reduce the CPU load of esxtop itself.
+Two command line options are introduced for this purpose: 
+.RB [ export-entity
+.IR entity-file ]
+and
+.RB [ import-entity
+.IR entity-file ].
+
+Users can do three steps to select entities which they want 
+to display. 
+
+(1) Users first export the list of current entities using 
+the export-entity option, by running 
+.B "esxtop -export-entity entity-file".
+The entity-file is generated, including the ids of all the
+existing entities at that time.
+
+(2) Then, they can edit the generated 
+.B entity-file
+to delete the entities by inserting
+.B # 
+before their names.
+
+(3) At last step, users can import 
+.B entity-file
+using the import-entity option, by running 
+.B "esxtop -import-entity entity-file".
+Therefore, esxtop will only show the stats for the entities 
+selected in the entity-file.
+
+Note that these two options are only available in esxtop, 
+not in resxtop.
+
+.SS Entity Highlight/Expand/Deletion Interactive Operations
+Under interactive mode, users can use keys in numpad to highlight, 
+expand and delete entities. 
+
+User can press 
+.B '8'
+to move up the highlight cursor, and 
+.B '2'
+to move down the highlight cursor.
+
+Users can press 
+.B '6' 
+to can expand/unroll the selected entity when appropriate. 
+In CPU Screen, it expands/rollups Resource 
+.B Pool/Worlds 
+CPU statistics. 
+In Storage Device Screen, pressing '6' can rotate the three 
+different expanding modes and rollup modes. Pressing '6' the 
+first time expands storage 
+.B world 
+statistics; pressing '6' the second time expands storage 
+.B path 
+statistics; pressing '6' the third time expands storage 
+.B partition 
+statistics; pressing '6' the fourth time rollups to the 
+default view. 
+In Disk VM Screen, pressing '6' can expand/rollup Resource 
+.B Pool/Worlds 
+Disk statistics. 
+
+Users can press 
+.B '4' 
+to remove the highlighted entity from display, which will 
+decrease the amount of stats we try to collect. 
+(Note that this delete operation is only available in esxtop, 
+not in resxtop.)
+
+Users can press
+.B '.' 
+to restore all the entities and we will collect data for all 
+of them again.
+
+.SS NOTES:
+
+Note that the disk VM screen shows the storage stats for a VM.
+The selection of group entities and disk device entities have
+effect to this screen. If the group is not chosen, it will not show
+up. If the device is not chosen, all operations on this device
+will be counted as zeros.
+
+
+.SH FILES
+.I ~/.esxtop50rc
+The personal configuration file.
+.
+.SH "SEE ALSO"
+.BR vm-support (1),
+.BR cpu (8),
+.BR mem (8),
+.BR diskbw (8),
+.BR numa (8)
+.SH COPYRIGHT
+VMware ESX is Copyright 1998\-2009 VMware, Inc.  All rights reserved.
+.SH DISCLAIMER
+
+Based on top source code from the OpenBSD distribution.
+
+   Copyright (c) 1997, Jason Downs.  All rights reserved.
+   Copyright (c) 1984, 1989, William LeFebvre, Rice University
+   Copyright (c) 1989, 1990, 1992, William LeFebvre, 
+                                   Northwestern University
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR(S) ``AS IS'' AND ANY EXPRESS
+OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR(S) BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
+
+.

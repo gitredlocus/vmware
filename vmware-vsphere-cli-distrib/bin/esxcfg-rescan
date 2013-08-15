@@ -1,0 +1,115 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+#
+# VMware ESX Server HBA Rescanning Tool.
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!  The host to use when connecting via a vCenter Server.  !,
+      required => 0,
+   },
+   '_default_' => {
+      type => "=s",
+      argval => "vmhba",
+      help => qq!  The vmkernel adapter name (e.g. vmhba0) !,
+      required => 1,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $hba = Opts::get_option('_default_');
+Opts::assert_usage(defined($hba), "Incorrect number of arguments.");
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['configManager.storageSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+my $ss = Vim::get_view (mo_ref => $host_view->{'configManager.storageSystem'});
+
+eval { $ss->RescanHba(hbaDevice => $hba); };
+if ($@) {
+   # bug 465255
+   VIExt::fail("Scan operation failed.");
+}
+
+print "Scan operation succeeded.\n";
+Util::disconnect();
+
+__END__
+
+=head1 NAME
+
+vicfg-rescan - scan the LUNs
+
+=head1 SYNOPSIS
+
+ vicfg-rescan [<connection_options>]
+    <adapter name> 
+    [--help
+     --vihost <esx_host>]
+
+=head1 DESCRIPTION
+
+Perform a rescan operation each time you reconfigure your storage setup.
+You can use the vicfg-rescan vSphere CLI or the vSphere Client to perform a rescan. 
+
+See the I<ESX Configuration Guide> and the I<ESXi Configuration Guide>. 
+The I<Fibre Channel SAN Configuration Guide> discusses rescan on Fibre Channel storage. 
+The I<iSCSI SAN Configuration Guide> discusses rescan on iSCSI storage. 
+
+When you rescan an ESX/ESXi host, the command returns only an indication of success or 
+failure and no detailed information.
+
+=head1 OPTIONS
+
+=over
+
+=item B<E<lt>adapter_nameE<gt>>
+
+Name of the adapter, for example vmhba1.
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-rescan --help>
+for a list of all connection options.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--vihost | -h E<lt>esx_hostE<gt>>
+
+When you run a vCLI command with  C<--server> pointing to a 
+vCenter Server system, use C<--vihost> to specify the ESX/ESXi host to run the command against. 
+
+=back
+
+=head1 EXAMPLES
+
+The following example assumes you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-rescan --help> for a list of common options including connection options.
+
+
+Refresh adapter registration. This command needs a
+adapter name to work, for example, vmhba0 or vmhba1:
+
+ vicfg-rescan <conn_options> vmhba0
+
+=cut
+

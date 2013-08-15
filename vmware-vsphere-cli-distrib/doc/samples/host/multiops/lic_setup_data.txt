@@ -1,0 +1,24 @@
+# File Format is key=value pairs separated by whitespace.
+# Blank lines are skipped.
+# keys are : host, edition, addons, source, in that order
+# if a key does not have a value, you must still specify key= 
+# host - specify a fully qualified domain name or IP address for a specific host
+#        "All" - settings apply in absense of a specific setting for 
+#        an individual host
+# addons - dependend on edition selected 
+#          vsmp, nas, iscsi, san, backup are allowed addons
+# edition - one of esxFull, esxExpress, esxBasic, esxVdi
+#          esxFull - all addons included, "backup" addon used for ESX Enterprise versions.
+#          esxVdi  - same features and addon as esxFull, and "backup" is included.
+#          esxBasic - "nas" is the only addon allowed. Excluded - "vsmp", "san", "backup".
+#          esxExpress - "nas" is the only addon allowed. Excluded - "vsmp", "san", "backup".
+# source - port@license-server@domain - the port and fully qualified license server name.
+#
+# the following line licenses all hosts with all features including backup
+#host=All edition=esxFull addons=backup source=27000@some-lic-server.mydomain.com
+#
+# the following line makes a special override for a particular host
+# Any host can have special case licensing setup as in the example below
+#host=hostname.domain edition=esxExpress addons=san source=port@lic-server.domain
+#
+host=All edition=esxFull addons=backup source=27000@licensehost-domain

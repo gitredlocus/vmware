@@ -1,0 +1,126 @@
+Installation Instructions
+	Prerequisite
+	Install for Fedora/CentOS
+	Install for Ubuntu/Debian
+	Install for Windows
+	Install for Mac OS X
+	Install for vMA
+
+---------------------------------------------------------------
+
+##################
+## Prerequisite ##
+##################
+
+Requires Perl 5.10.0 
+
+---------------------------------------------------------------
+
+####################################
+## Linux install for Fedora/CentOS #
+####################################
+
+yum -y install perl-XML-LibXML perl-XML-LibXML-common perl-XML-SAX perl-XML-DOM perl-XML-Parser perl-XML-RegExp perl-Data-Dump perl-Class-MethodMaker perl-Crypt-SSLeay perl-Tk perl-Time-modules
+
+Now install one of:
+
+VMware-vSphere-SDK-for-Perl-4.0.0-161974.i386.tar.gz
+VMware-vSphere-SDK-for-Perl-4.0.0-161974.x86_64.tar.gz
+VMware-vSphere-Perl-SDK-4.1.0-254719.i386.tar.gz
+VMware-vSphere-Perl-SDK-4.1.0-254719.x86_64.tar.gz
+
+Order is important.
+
+Linux install for RedHat
+echo << EOF > /etc/yum.repos.d/dag.repo
+[dag]
+name=Dag RPM Repository for Red Hat Enterprise Linux
+baseurl=http://dag.linux.iastate.edu/dag/redhat/el5/en/x86_64/dag
+gpgcheck=1
+enabled=1
+EOF
+rpm --import  http://dag.wieers.com/rpm/packages/RPM-GPG-KEY.dag.txt
+yum -y install perl-XML-LibXML perl-XML-LibXML-common perl-XML-SAX perl-XML-DOM perl-XML-Parser perl-XML-RegExp perl-Data-Dump perl-Class-MethodMaker perl-Crypt-SSLeay perl-Time-modules perl-Tk
+
+Install vGhtto
+        Install
+                sudo rpm -ivh vGhetto-1.0-1.noarch.rpm
+
+        Uninstall
+                sudo rpm -e vGhetto-1.0-1
+
+        Query
+                rpm -qa | grep -i vghetto
+
+---------------------------------------------------------------
+
+#####################
+## Windows install ##
+#####################
+
+Install one of:
+
+VMware-vSphere-Perl-SDK-4.1.0-254719.exe
+VMware-VIPERL-4.0.0-161974.exe
+
+Install vGhetto
+        vGhettoSetup.exe
+
+---------------------------------------------------------------
+
+#####################################
+## Linux install for Ubuntu/Debian ##
+#####################################
+sudo apt-get install libxml-dom-perl libxml-perl libxml-regexp-perl libxml-SAX-perl libxml-libxml-common-perl perl-tk libtime-modules-perl libclass-methodmaker-perl libcrypt-ssleay-perl libdata-dump-perl
+
+
+Now install one of:
+
+VMware-vSphere-SDK-for-Perl-4.0.0-161974.i386.tar.gz
+VMware-vSphere-SDK-for-Perl-4.0.0-161974.x86_64.tar.gz
+VMware-vSphere-Perl-SDK-4.1.0-254719.i386.tar.gz
+VMware-vSphere-Perl-SDK-4.1.0-254719.x86_64.tar.gz
+
+Again the order is important.
+
+Install vGhtto
+        Install
+                sudo dpkg -i vGhetto-1.0.deb
+
+        Uninstall
+                sudo dpkg -r vghetto
+
+        Query
+                dpkg --get-selections | grep vghetto
+
+---------------------------------------------------------------
+############################
+## Install within MacOS X ##
+############################
+
+First ensure that XcodeTools (Mac OS X Developer Tools) are installed. You can
+find this on your installation media.
+
+Second Download and install the Combo Installer for libpng & libjpeg from
+http://ethan.tira-thompson.org/Mac_OS_X_Ports.html
+
+Third Download the VMware-vSphere-SDK-for-Perl*.i386.tar.gz package from
+http://communities.vmware.com/community/developer/forums/vsphere_sdk_perl
+
+Lastly, run the following script from the vghetto repository installers
+directory. Ensure you run from the same directory as where the VMware
+vSphere SDK lives. When you run this script just hit return anytime you need
+to answer a question as the defaults work just fine.
+	sudo ./vghetto_osx.sh
+
+############################
+## Install within vMA 4.1 ##
+############################
+
+To install into vMA 4.1 use the script 'vghetto.sh' in the 'installers'
+directory. This includes everything you need to work with vghetto within 
+vMA as well as run the vGhetto Client using SSH X11 Forwarding. The script
+has a line or two to uncomment if you wish to display the vGhetto client using
+VNC. Transfer vghetto.sh to your vMA vi-admin account and then run:
+
+	sudo ./vghetto.sh

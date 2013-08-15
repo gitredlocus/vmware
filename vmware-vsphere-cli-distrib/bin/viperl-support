@@ -1,0 +1,10 @@
+#!/usr/bin/perl
+
+my @modules = qw(VMware::VIRuntime XML::LibXML Data::Dumper Class::MethodMaker LWP Crypt::SSLeay);
+print "Checking module versions...\n\n";
+printf "%-30s%s\n", 'Module', 'Version';
+printf "%-30s%s\n", '======', '=======';
+foreach my $module (@modules) {
+   eval "require $module";
+      printf "%-30s%s\n", $module, $module->VERSION || 'None';
+}

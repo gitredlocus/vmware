@@ -1,0 +1,24 @@
+1. You'll need to create .rpmmacros file that contains the macro specifying the build path
+
+a) Get your current path in which RPM directory is located in
+
+e.g. 
+[primp@build-centos RPM]$ pwd
+/home/primp/src/RPM
+
+b) Create .rpmmacros in your home directory with %_topdir to the path that was returned and append "rpm"
+
+e.g.
+	
+[primp@build-centos RPM]$ cat ~/.rpmmacros
+
+%_topdir        /home/primp/src/RPM/rpm	
+
+You're now ready to build!
+
+Build - This will perform build operation and generate an RPM in the current working directory
+	./package build
+Clean - This will clean up any previous files download or RPMs created
+	./package clean
+Checkout - This will only check out the scripts directory from repo
+	./package checkout

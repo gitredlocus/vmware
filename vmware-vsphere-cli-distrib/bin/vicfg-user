@@ -1,0 +1,1058 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   operation => {
+      alias => "o",
+      type => "=s",
+      help => qq!  "Operation to perform (add | modify | delete | list)."  !,
+      required => 1,
+   },
+   entity => {
+      alias => "e",
+      type => "=s",
+      help => qq!  "Entity to perform the operation in (user | group)."  !,
+      required => 1,
+   },
+   login => {
+      alias => "l",
+      type => "=s",
+      help => qq!  "Login id of the user."  !,
+      required => 0,
+   },
+   newpassword => {
+      alias => "p",
+      type => "=s",
+      help => qq!  "The password for the target user."  !,
+      required => 0,
+   },
+   newusername => {
+      alias => "n",
+      type => "=s",
+      help => qq!  "The user name (optional) for the target user."  !,
+      required => 0,
+   },
+   newuserid => {
+      alias => "i",
+      type => "=s",
+      help => qq!  "The UUID (optional) for the target user."  !,
+      required => 0,
+   },
+   addgroup => {
+      alias => "g",
+      type => "=s",
+      help => qq!  "The list of groups (comma seperated) to add the target user to."  !,
+      required => 0,
+   },
+   removegroup => {
+      alias => "G",
+      type => "=s",
+      help => qq!  "The list of groups (comma seperated) to remove the target user from."  !,
+      required => 0,
+   },
+   shell => {
+      alias => "s",
+      type => "=s",
+      help => qq!  "Grant shell access to the target user or not (yes | no)."  !,
+      required => 0,
+   },
+   group => {
+      alias => "d",
+      type => "=s",
+      help => qq!  "Group name of the group."  !,
+      required => 0,
+   },
+   groupid => {
+      alias => "D",
+      type => "=s",
+      help => qq!  "Group id of the group."  !,
+      required => 0,
+   },
+   adduser => {
+      alias => "u",
+      type => "=s",
+      help => qq!  "The list of the users (comma seperated) to be added to the target group."  !,
+      required => 0,
+   },
+   removeuser => {
+      alias => "U",
+      type => "=s",
+      help => qq!  "The list of the users (comma seperated) to be removed from the target group."  !,
+      required => 0,
+   },
+   role => {
+      alias => "r",
+      type => "=s",
+      help => qq!  "The role for the target user / group (admin | read-only | no-access)."  !,
+      required => 0,
+   },
+   promptpassword => {
+      alias => "P",
+      type => "",
+      help => qq!  "Required to guide script to prompt for password change."  !,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate(\&validate);
+
+my $operation = Opts::get_option('operation');
+my $entity = Opts::get_option('entity');
+my $login = Opts::get_option('login');
+my $newPassword = Opts::get_option('newpassword');
+my $newUserName = Opts::get_option('newusername');
+my $newUserId = Opts::get_option('newuserid');
+my $addGroup = Opts::get_option('addgroup');
+my $removeGroup = Opts::get_option('removegroup');
+my $shellAccess = Opts::get_option('shell');
+my $group = Opts::get_option('group');
+my $groupId = Opts::get_option('groupid');
+my $addUser = Opts::get_option('adduser');
+my $removeUser = Opts::get_option('removeuser');
+my $role = Opts::get_option('role');
+my $promptpasswd = Opts::get_option('promptpassword');
+
+Util::connect();
+
+my $si_moref = ManagedObjectReference->new(type => 'ServiceInstance',
+                                           value => 'ServiceInstance');
+my $service_instance = Vim::get_view(mo_ref=>$si_moref);
+my $service_content = $service_instance->content;
+
+my $exit_code = 0;
+
+# bug 269449
+if(defined $shellAccess && $shellAccess eq 'yes') {
+   my $productLineID = $service_content->about->productLineId;
+   if($productLineID eq 'embeddedEsx'){
+      VIExt::fail("Error: Shell access is not allowed in ESXi.");
+   }
+}
+
+my $hostLocalAccountManager = $service_content->accountManager;
+Opts::assert_usage(defined($hostLocalAccountManager), "Host Account Manager Not Found.");
+my $hostLocalAccountManager_view = Vim::get_view(mo_ref=>$hostLocalAccountManager);
+
+my $authorizationManager = $service_content->authorizationManager;
+Opts::assert_usage(defined($authorizationManager), "Host Authorization Manager Not Found.");
+my $authorizationManager_view = Vim::get_view(mo_ref=>$authorizationManager);
+
+if($entity eq 'user') {
+   if($operation eq 'add') {
+      add_user($hostLocalAccountManager_view,$authorizationManager_view);
+   }
+   elsif($operation eq 'modify') {
+      modify_user($hostLocalAccountManager_view,$authorizationManager_view);
+   }
+   elsif($operation eq 'delete') {
+      remove_user($hostLocalAccountManager_view,$authorizationManager_view);
+   }
+   elsif($operation eq 'list') {
+      my $userDirectory = $service_content->userDirectory;
+      my $userDirectory_view = Vim::get_view(mo_ref=>$userDirectory);
+      list_user($userDirectory_view);
+   }
+}
+elsif($entity eq 'group') {
+   if($operation eq 'add') {
+      add_group($hostLocalAccountManager_view,$authorizationManager_view);
+   }
+   elsif($operation eq 'modify') {
+      modify_group($hostLocalAccountManager_view,$authorizationManager_view);
+   }
+   elsif($operation eq 'delete') {
+      remove_group($hostLocalAccountManager_view,$authorizationManager_view);
+   }
+   # bug 269455
+   elsif($operation eq 'list') {
+      my $userDirectory = $service_content->userDirectory;
+      my $userDirectory_view = Vim::get_view(mo_ref=>$userDirectory);
+      if(defined Opts::get_option('group')) {
+         list_group($userDirectory_view, $group);
+      }
+      else {
+        list_group($userDirectory_view, undef);
+      }
+   }
+}
+
+Util::disconnect();
+
+if ($exit_code > 0) {
+   exit($exit_code);
+}
+
+sub add_user {
+   my ($hostLocalAccountManager_view,$authorizationManager_view) = @_;
+   my $shell = 0;
+   if(defined $shellAccess && $shellAccess eq 'yes') {
+      $shell = 1;
+   }
+   if(! defined $newPassword) {
+      $newPassword = get_password();
+      # bug 387379
+      if (!defined $newPassword) {
+         return;
+      }
+   }
+   my $hostAccountSpec = HostPosixAccountSpec->new(description=>$newUserName,
+                                                   id=>$login,
+                                                   password=>$newPassword,
+                                                   posixId=>$newUserId,
+                                                   shellAccess=>$shell);
+   # bug 268266
+   eval {
+      $hostLocalAccountManager_view->CreateUser(user=>$hostAccountSpec);
+      print "Created user " . $login . " successfully.\n";
+   };
+   if ($@) {
+      if (ref($@) eq 'SoapFault') {
+         if ($@ =~ /AlreadyExists/) { 
+             VIExt::fail("Error: Specified local user account already exists.");
+         } elsif ($@ =~ /InvalidArgument/) {
+             VIExt::fail("Error: User name or password has an invalid format.");
+         } else {
+             VIExt::fail("Error: User not created.\n$@");
+         }
+      }
+   }
+
+   if(defined $addGroup) {
+      my @items    = split(/,/,$addGroup);
+      foreach my $i (@items) {
+         my $groupName = $i;
+         # bug 268266
+         eval {
+            $hostLocalAccountManager_view->AssignUserToGroup(user=>$login,
+                                                             group=>$groupName);
+            print "Assigned to the group " . $groupName . "\n";
+         };
+         if ($@) {
+            if (ref($@) eq 'SoapFault') {
+               # bug 512161
+               if ($@ =~ /AlreadyExists/) { 
+                  Util::trace(0, "Error: User is already a member of the target group.\n");
+               } elsif ($@ =~ /UserNotFound/) {
+                  Util::trace(0, "Error: Group " . $groupName . " possibly does not exist.\n");
+               } else {
+                  Util::trace(0, "Error: User not added to the group" . $groupName . ".\n$@\n");
+               }
+               $exit_code = 1;
+            }
+         }
+      }
+   }
+   if(defined $role) {
+      my $role_id = get_role_id($role);
+      my $per = Permission->new(group=>0,
+                                principal=>$login,
+                                propagate=>1,
+                                roleId=>$role_id);
+      my @permission_array = ($per);
+      # bug 268266
+      eval {
+         $authorizationManager_view->SetEntityPermissions(entity=>$service_content->rootFolder,
+                                                       permission=>@permission_array);
+         print "Assigned the role " . $role . "\n";
+      };
+      if ($@) {
+         if (ref($@) eq 'SoapFault') {
+            if ($@ =~ /AuthMinimumAdminPermission/) { 
+               VIExt::fail("Error: This change would leave the system with no Administrator permission on the root node,".
+              "or it would grant further permission to a user or group who already has Administrator".
+               "permission on the root node.");
+            } elsif ($@ =~ /NotFound/) {
+                VIExt::fail("Error: Permission's roleId is not valid.");
+            } elsif ($@ =~ /InvalidArgument/) {
+                VIExt::fail("Error: One of the the new role IDs is the View or Anonymous role,".
+                   "or the entity does not support assigning permissions.");
+            } elsif ($@ =~ /ManagedObjectNotFound/) {
+                VIExt::fail("Error: Given entity does not exist.");
+            } elsif ($@ =~ /UserNotFound/) {
+                VIExt::fail("Error:  Given user or group does not exist.");
+            }
+            else {
+                VIExt::fail("Error: Role " . $role . " not assigned to the user.\n$@");
+            }
+         }
+      }
+   }
+}
+
+
+# bug 269439
+sub get_user_shellaccess {
+   my $shellAccess =  undef;
+   my ($userDirectory_view, $id) = @_;
+   my $userArray = $userDirectory_view->RetrieveUserGroups(searchStr=>'',
+                                           exactMatch=>0,
+                                           findUsers=>1,
+                                           findGroups=>0);
+
+   if (!$id) {
+      VIExt::fail("Error: User login id is not specified (check --login option).");
+   }
+
+   foreach(@$userArray) {
+      if($_->principal eq $id){
+         if($_->isa('PosixUserSearchResult')) {
+            $shellAccess = $_->shellAccess;
+         }
+      }
+   }
+   return $shellAccess;
+}
+
+
+sub modify_user {
+   my ($hostLocalAccountManager_view,$authorizationManager_view) = @_;
+   # bug 269439
+   my $shell = undef; 
+   if(defined $shellAccess){
+     if($shellAccess eq 'yes') {
+         $shell = 1;
+      }
+      elsif($shellAccess eq 'no') {
+         $shell = 0;
+      }
+   }
+   else {
+      my $userDirectory = $service_content->userDirectory;
+      my $userDirectory_view = Vim::get_view(mo_ref=>$userDirectory);
+      $shell =  get_user_shellaccess($userDirectory_view, $login)
+   }
+
+   if(! defined $newPassword) {
+      # bug 468795
+      # my $confirm = get_confirmation();
+      if(defined $promptpasswd){
+         $newPassword = get_password();
+         # bug 387379
+         if (!defined $newPassword) {
+            return;
+         }
+      }
+   }
+   my $hostAccountSpec;
+   if(defined $shell) {
+      $hostAccountSpec = HostPosixAccountSpec->new(description=>$newUserName,
+                                                      id=>$login,
+                                                      password=>$newPassword,
+                                                      posixId=>$newUserId,
+                                                      shellAccess=>$shell);
+   }
+   else {
+      $hostAccountSpec = HostPosixAccountSpec->new(description=>$newUserName,
+                                                      id=>$login,
+                                                      password=>$newPassword,
+                                                      posixId=>$newUserId);
+   }
+   # bug 268266
+   eval {
+      $hostLocalAccountManager_view->UpdateUser(user=>$hostAccountSpec);
+      print "Updated user " . $login . " successfully.\n";
+   };
+   if ($@) {
+      if (ref($@) eq 'SoapFault') {
+         if ($@ =~ /AlreadyExists/) { 
+            VIExt::fail("Error: New account specification specifies an existing user's ID.");
+         } elsif ($@ =~ /InvalidArgument/) {
+            VIExt::fail("Error: New password or description has an invalid format.");
+         } elsif ($@ =~ /UserNotFound/) {
+            VIExt::fail("Error:  User not found.");
+         }
+         else {
+            if (!defined($login)) {
+               $login = "";
+            }
+            VIExt::fail("Error: User not updated " . $login . ".\n$@");
+         }
+       }
+   }
+
+   if(defined $addGroup) {
+      my @items    = split(/,/,$addGroup);
+      foreach my $i (@items) {
+         my $groupName = $i;
+          # bug 268266
+          eval {
+            $hostLocalAccountManager_view->AssignUserToGroup(user=>$login,
+                                                          group=>$groupName);
+            print "Assigned to the group " . $groupName . "\n";
+          };
+          if ($@) {
+            if (ref($@) eq 'SoapFault') {
+               #bug 512161
+               if ($@ =~ /AlreadyExists/) { 
+                  Util::trace(0, "User is already a member of the group " . $groupName . ".\n");
+               } elsif ($@ =~ /UserNotFound/) {
+                  Util::trace(0, "Error: Group " . $groupName . " possibly does not exist.\n");
+               } else {
+                  Util::trace(0, "Error: User not added to the group " . $groupName . ".\n$@\n");
+               }
+               $exit_code = 1;
+            }
+         }
+      }
+   }
+   if(defined $removeGroup) {
+      my @items    = split(/,/,$removeGroup);
+      foreach my $i (@items) {
+         my $groupName = $i;
+          # bug 268266
+          eval {
+            $hostLocalAccountManager_view->UnassignUserFromGroup(user=>$login,
+                                                              group=>$groupName);
+            print "Unassigned from the group " . $groupName . "\n";
+          };
+         if ($@) {
+            if (ref($@) eq 'SoapFault') {
+               if ($@ =~ /NoPermission/) { 
+                  VIExt::fail("Error: Group is the only group to which the user belongs to.");
+               } elsif ($@ =~ /UserNotFound/) {
+                  # bug 512161
+                  Util::trace(0, "Error: Group " . $groupName . " possibly does not exist.\n");
+               } else {
+                  # bug 512161
+                  Util::trace(0, "Error: User not unassigned from the group" . $groupName . ".\n$@\n");
+               }
+               $exit_code = 1;
+            }
+         }
+      }
+   }
+   if(defined $role) {
+      my $role_id = get_role_id($role);
+      my $per = Permission->new(group=>0,
+                                principal=>$login,
+                                propagate=>1,
+                                roleId=>$role_id);
+      my @permission_array = ($per);
+        # bug 268266
+        eval {
+           $authorizationManager_view->SetEntityPermissions(entity=>$service_content->rootFolder,
+                                                            permission=>@permission_array);
+           print "Assigned the role " . $role . "\n";
+        };
+        if ($@) {
+           if (ref($@) eq 'SoapFault') {
+              if ($@ =~ /AuthMinimumAdminPermission/) { 
+                 VIExt::fail("Error: This change would leave the system with no Administrator permission on the root node,".
+                     "or it would grant further permission to a user or group who already has Administrator".
+                     "permission on the root node.");
+              } elsif ($@ =~ /NotFound/) {
+                 VIExt::fail("Error: Permission's roleId is not valid.");
+              } elsif ($@ =~ /InvalidArgument/) {
+                 VIExt::fail("Error: One of the the new role IDs is the View or Anonymous role,".
+                     "or the entity does not support assigning permissions.");
+              } elsif ($@ =~ /ManagedObjectNotFound/) {
+                 VIExt::fail("Error: Given entity does not exist.");
+              } elsif ($@ =~ /UserNotFound/) {
+                 VIExt::fail("Error:  Given user or group does not exist.");
+              }
+           else {
+              VIExt::fail("Error: Role not assigned" . $role . ".\n$@");
+           }
+        }
+     }
+   }
+}
+
+sub remove_user {
+   my ($hostLocalAccountManager_view) = @_;
+   # bug 268266
+   eval {
+      # bug 294417
+      my $permissions = $authorizationManager_view->RetrieveEntityPermissions
+                                                 (entity=>$service_content->rootFolder,
+                                                  inherited=>'false');
+      foreach (@$permissions) {
+          my $user_principal = $_->principal;
+          if($user_principal eq $login){
+          $authorizationManager_view->RemoveEntityPermission(entity=>$service_content->rootFolder,
+                                                         user=>$login,
+                                                         isGroup=>'false');
+          }
+      }
+      $hostLocalAccountManager_view->RemoveUser(userName=>$login);
+      print "Removed the user " . $login . " successfully.\n";
+   };
+   if ($@) {
+      if (ref($@) eq 'SoapFault') {
+         if ($@ =~ /UserNotFound/) { 
+             VIExt::fail("Error: Specified userName does not exist.");
+         } elsif($@ =~ /NotFound/) { 
+             VIExt::fail("Error: Specified user does not exist.");
+         } else {
+             VIExt::fail("Error: User not removed  " . $login . ".\n$@");
+         }
+      }
+   }
+}
+
+sub list_user {
+   my ($userDirectory_view) = @_;
+   my $userArray = $userDirectory_view->RetrieveUserGroups(searchStr=>'',
+                                           exactMatch=>0,
+                                           findUsers=>1,
+                                           findGroups=>0);
+   print "USERS\n";
+   print "-----------------\n";
+   foreach(@$userArray) {
+      print "Principal -: ".$_->principal."\n";
+      print "Full Name -: ".$_->fullName."\n";
+      if($_->isa('PosixUserSearchResult')) {
+         print "UID -: ".$_->id."\n";
+         if(defined $_->shellAccess) {
+            print "Shell Access -:".$_->shellAccess."\n";
+         }
+         print "\n-----------------\n";
+      }
+   }
+}
+
+
+
+
+sub add_group {
+   my ($hostLocalAccountManager_view,$authorizationManager_view) = @_;
+   my $hostAccountSpec = HostPosixAccountSpec->new(id=>$group,
+                                                   posixId=>$groupId);
+   # bug 268266
+   eval {
+      $hostLocalAccountManager_view->CreateGroup(group=>$hostAccountSpec);
+      print "Created group " . $group . " successfully.\n";
+   };
+   # bug 294417
+   if ($@) {
+      if (ref($@) eq 'SoapFault') {
+         if ($@ =~ /AlreadyExists/) { 
+             VIExt::fail("Error: The specified group or group id already exists.");
+         } elsif($@ =~ /InvalidArgument/) {
+             VIExt::fail("Error: Group name is invalid format.");
+         }elsif ($@ =~ /InvalidRequest/) {
+             VIExt::fail("Error: Group " . $group . " not created, as request is invalid.\n");
+         } else {
+             VIExt::fail("Error: Group " . $group . " not created.\n$@");
+         }
+      }
+   }
+
+   if(defined $addUser) {
+      my @items    = split(/,/,$addUser);
+      foreach my $i (@items) {
+         my $userName = $i;
+         # bug 268266
+         eval {
+            $hostLocalAccountManager_view->AssignUserToGroup(user=>$userName,
+                                                          group=>$group);
+            print "Assigned user " . $userName . " to the group.\n";
+         };
+         if ($@) {
+            if (ref($@) eq 'SoapFault') {
+               # bug 512161
+               if ($@ =~ /AlreadyExists/) { 
+                  Util::trace(0, "Error: User is already a member of the target group.\n");
+               } elsif ($@ =~ /UserNotFound/) {
+                  Util::trace(0, "Error: User " . $userName . " possibly does not exist.\n");
+               } else {
+                  Util::trace(0, "Error: User " . $userName ." not added to the group.\n$@\n");
+               }
+               $exit_code = 1;
+            }
+         }
+      }
+   }
+   if(defined $role) {
+      my $role_id = get_role_id($role);
+      my $per = Permission->new(group=>1,
+                                principal=>$group,
+                                propagate=>1,
+                                roleId=>$role_id);
+      my @permission_array = ($per);
+      # bug 268266
+      eval {
+         $authorizationManager_view->SetEntityPermissions(entity=>$service_content->rootFolder,
+                                                       permission=>@permission_array);
+         print "Assigned the role " . $role . "\n";
+      };
+      if ($@) {
+         if (ref($@) eq 'SoapFault') {
+            if ($@ =~ /AuthMinimumAdminPermission/) { 
+               VIExt::fail("Error: This change would leave the system with no Administrator permission on the root node,".
+               "or it would grant further permission to a user or group who already has Administrator".
+                   "permission on the root node.");
+            } elsif ($@ =~ /NotFound/) {
+                VIExt::fail("Error: Permission's roleId is not valid.");
+            } elsif ($@ =~ /InvalidArgument/) {
+                VIExt::fail("Error: One of the the new role IDs is the View or Anonymous role,".
+                    "or the entity does not support assigning permissions.");
+            } elsif ($@ =~ /ManagedObjectNotFound/) {
+                VIExt::fail("Error: Given entity does not exist.");
+            } elsif ($@ =~ /UserNotFound/) {
+                VIExt::fail("Error:  Given user or group does not exist.");
+            }
+            else {
+                VIExt::fail("Error: Role " . $role ." not assigned to the user.\n$@");
+            }
+         }
+      }
+   }
+}
+
+sub modify_group {
+   my ($hostLocalAccountManager_view,$authorizationManager_view) = @_;
+   if(defined $addUser) {
+      my @items    = split(/,/,$addUser);
+      foreach my $i (@items) {
+         my $userName = $i;
+         # bug 268266
+         eval {
+            $hostLocalAccountManager_view->AssignUserToGroup(user=>$userName,
+                                                          group=>$group);
+            print "Assigned user " . $userName . " to the group.\n";
+         };
+         if ($@) {
+            if (ref($@) eq 'SoapFault') {
+               # bug 512161
+               if ($@ =~ /AlreadyExists/) { 
+                  Util::trace(0, "Error: User is already a member of the target group.\n");
+               } elsif ($@ =~ /UserNotFound/) {
+                  Util::trace(0, "Error: Specified user or group does not exist.\n");
+               } else {
+                  Util::trace(0, "Error: User " . $userName . " not added to the group.\n$@\n");
+               }
+               $exit_code = 1;
+            }
+         }
+      }
+   }
+   
+   # bug 268266
+   if(defined $groupId) {
+      VIExt::fail("Error: Id of the group cannot be changed.");
+   }
+
+   if(defined $removeUser) {
+      my @items    = split(/,/,$removeUser);
+      foreach my $i (@items) {
+         my $userName = $i;
+         # bug 268266
+         eval {
+            $hostLocalAccountManager_view->UnassignUserFromGroup(user=>$userName,
+                                                          group=>$group);
+            print "Unassigned user " . $userName . " from the group.\n";
+         };
+         if ($@) {
+            if (ref($@) eq 'SoapFault') {
+               if ($@ =~ /NoPermission/) { 
+                  VIExt::fail("Error: Group is the only group to which the user belongs to.");
+               } elsif ($@ =~ /UserNotFound/) {
+                  Util::trace(0, "Error: Specified user or group does not exist.\n");
+               } else {
+                  Util::trace(0, "Error: User " . $userName . " is not unassigned from the group.\n$@\n");
+               }
+               $exit_code = 1;
+            }
+         }
+      }
+   }
+   if(defined $role) {
+      my $role_id = get_role_id($role);
+      my $per = Permission->new(group=>1,
+                                principal=>$group,
+                                propagate=>1,
+                                roleId=>$role_id);
+      my @permission_array = ($per);
+      # bug 268266
+      eval {
+          $authorizationManager_view->SetEntityPermissions(entity=>$service_content->rootFolder,
+                                                       permission=>@permission_array);
+           print "Assigned the role " . $role . "\n";
+      };
+      if ($@) {
+         if (ref($@) eq 'SoapFault') {
+            if ($@ =~ /AuthMinimumAdminPermission/) { 
+               VIExt::fail("Error: This change would leave the system with no Administrator permission on the root node,".
+                   "or it would grant further permission to a user or group who already has Administrator".
+                   "permission on the root node.");
+            # bug 419099
+            } elsif ($@ =~ /UserNotFound/) {
+                VIExt::fail("Error: Given user or group does not exist.");
+            } elsif ($@ =~ /NotFound/) {
+                VIExt::fail("Error: Permission's roleId is not valid.");
+            } elsif ($@ =~ /InvalidArgument/) {
+                VIExt::fail("Error: One of the the new role IDs is the View or Anonymous role,".
+                 "or the entity does not support assigning permissions.");
+            } elsif ($@ =~ /ManagedObjectNotFound/) {
+                VIExt::fail("Error: Given entity does not exist.");
+            }
+            else {
+                VIExt::fail("Error: Role " . $role . " is not assigned.\n$@");
+            }
+         }
+      }
+   }
+}
+
+sub remove_group {
+   my ($hostLocalAccountManager_view) = @_; 
+   # bug 268266, 294417
+   eval{
+      my $permissions = $authorizationManager_view->RetrieveEntityPermissions
+                                                 (entity=>$service_content->rootFolder,
+                                                  inherited=>'false');
+      foreach (@$permissions) {
+          my $group_principal = $_->principal;
+          if($group_principal eq $group){
+          $authorizationManager_view->RemoveEntityPermission(entity=>$service_content->rootFolder,
+                                                         user=>$group,
+                                                         isGroup=>'true');
+          }
+      }
+      $hostLocalAccountManager_view->RemoveGroup(groupName=>$group);
+      print "Deleted " . $group . " successfully.\n";
+   };
+   if ($@) {
+      if (ref($@) eq 'SoapFault') {
+         if ($@ =~ /UserNotFound/) { 
+             VIExt::fail("Error: Specified groupName does not exist.");
+         } elsif($@ =~ /NotFound/) { 
+             VIExt::fail("Error: Specified group does not exist.");
+         } else {
+            VIExt::fail("Error: Group " . $group . " is not deleted.\n$@");
+         }
+      }
+   }
+}
+
+# bug 269455
+sub list_group {
+   my ($userDirectory_view, $group) = @_;
+   my $userArray;
+   my $group_name;
+   if(defined $group) {
+        $group_name = $group;
+        $userArray = $userDirectory_view->RetrieveUserGroups(searchStr=>$group_name,
+                                           exactMatch=>1,
+                                           findUsers=>0,
+                                           findGroups=>1);
+   }
+   else {
+        $userArray = $userDirectory_view->RetrieveUserGroups(searchStr=>'',
+                                           exactMatch=>0,
+                                           findUsers=>0,
+                                           findGroups=>1);
+      }
+
+   if (defined @$userArray) {
+      foreach(@$userArray) {
+         print "\nGroup Information:\n";
+         print "Principal -: ".$_->principal."\n";
+         my $principal = $_->principal;
+         print "Full Name -: ".$_->fullName."\n";
+         if($_->isa('PosixUserSearchResult')) {
+            # bug 318813
+            print "GID       -: ".$_->id."\n";
+         }
+         my $userbelongstogroup = $userDirectory_view->RetrieveUserGroups(searchStr=>'',
+                                              belongsToGroup=>$_->principal,
+                                              exactMatch=>0,
+                                              findUsers=>1,
+                                              findGroups=>0);
+         if(defined @$userbelongstogroup && @$userbelongstogroup ne "" ) {
+            print "\nUsers in group " . $principal . ": \n";
+            foreach  (@$userbelongstogroup) {
+               if(defined $_->principal){
+                  print "Principal -: " . $_->principal . "\n";
+               }
+               if(defined $_->fullName ) {
+                  print "Full Name -: " . $_->fullName . "\n\n";
+               }
+            }
+         }
+         print "\n------------------\n";
+      }
+   }
+   else {
+       VIExt::fail("Error: Specified groupName '$group_name' does not exist.");
+   }
+}
+
+sub get_role_id {
+   my ($role) = @_;
+   my $role_id = undef;
+   if($role eq 'no-access') {
+      $role_id = -5;
+   }
+   elsif($role eq 'read-only') {
+      $role_id = -2;
+   }
+   elsif($role eq 'admin') {
+      $role_id = -1;
+   }
+}
+sub get_confirmation {
+   print "Do you want to change the password (y/n): ";
+   my $confirm = <STDIN>;
+   chomp $confirm;
+   return $confirm;
+}
+
+sub get_password {
+   my $password;
+   my $password1;
+   my $password2;
+   # bug 268248
+   print "Enter password for the user: ";
+   $password1 = read_password();
+   my $count = length $password1;
+   if($count <=3){
+    print "\n Warning: Number of characeters in the password are less than 3";
+   }
+   print "\nEnter password for the user again: ";
+   $password2 = read_password();
+   if($password1 eq $password2){
+      $password = $password1;
+   }
+   else {
+      # bug 387379
+      VIExt::fail("\nError: password does not match.");     
+   }
+   print "\n";
+   return $password;
+}
+
+# bug 268248
+sub read_password {
+   # bug 387379
+   $/ = "\n";
+   my $password ;
+    if ( $^O eq "MSWin32" ) {
+       require Term::ReadKey;
+       Term::ReadKey->import(qw(ReadMode));
+       Term::ReadKey->import(qw(ReadLine));
+       ReadMode('noecho');
+       chomp($password = ReadLine(0));
+       ReadMode('normal');
+    }
+    else {
+       system("stty -echo") and die "Error: stty failed.\n";
+       chomp ($password = <STDIN>);
+       system("stty echo") and die "Error: stty failed.\n";
+   }
+   undef $/;   
+   return $password;
+}
+
+
+sub validate {
+   my $valid = 1;
+   my $operation = Opts::get_option('operation');
+   my $entity = Opts::get_option('entity');
+   my $role = Opts::get_option('role');
+   my $shellAccess = Opts::get_option('shell');
+   # bug 377828 
+   my $login = Opts::get_option('login');
+   my $group = Opts::get_option('group');   
+   
+   if(!($operation eq 'add' || $operation eq 'modify' || $operation eq 'delete' || $operation eq 'list')) {
+      print "Invalid value for argument operation. Operation must be either add, modify, remove or list.\n";
+      $valid = 0;
+   }
+   if(!($entity eq 'user' || $entity eq 'group')) {
+      print "Invalid value for argument entity. Entity must be either user or group.\n";
+      $valid = 0;
+   }   
+   # bug 377828 
+   if(($entity eq 'group') && ($operation eq 'add' || $operation eq 'modify' || $operation eq 'delete') && !(defined $group)) {
+      print "Must Specify group name with following operation.\n";
+      $valid = 0;
+   }   
+   if(($entity eq 'user') && ($operation eq 'add' || $operation eq 'modify' || $operation eq 'delete') && !(defined $login)) {
+      print "Must Specify user name with following operation.\n";
+      $valid = 0;
+   }   
+   if(defined $role) {
+      if(!($role eq 'no-access' || $role eq 'read-only' || $role eq 'admin')) {
+         print "Invalid value for argument role. Role must be either no-access, read-only or admin.\n";
+         $valid = 0;
+      }
+   }
+   if(($entity eq 'group') && (defined $shellAccess)) {
+      print "Invalid value for argument shell. Can only be used with entity user.\n";
+      $valid = 0;
+   }   
+   if(defined $shellAccess) {
+      if(!($shellAccess eq 'yes' || $shellAccess eq 'no')) {
+         print "Invalid value for argument shell.  Value must be yes or no.\n";
+         $valid = 0;
+      }
+   }
+   return $valid;
+}
+
+
+
+=head1 NAME
+
+vicfg-user - manage users and groups
+
+=head1 SYNOPSIS
+
+ vicfg-user <conn_options> -e <user | group> -o <add | modify | delete | list> [options]
+
+B<Note>: The syntax of this command differs from other vSphere CLI commands. 
+
+=head1 DESCRIPTION
+
+An ESX/ESXi system grants access to its resources when a known user with appropriate permissions 
+logs on to the system with a password that matches the one stored for that user. 
+The vicfg-user command supports creating, modifying, deleting, and listing local direct access users 
+and groups of users on an ESX/ESXi host. You cannot run this command against a vCenter Server system. 
+
+User management is discussed in detail in the I<ESX Configuration Guide>, the I<ESXi Configuration Guide>, 
+and the I<Basic System Administration> document. 
+
+=head1 OPTIONS
+
+=over
+
+=item B<--addgroup | -g E<lt>group_listE<gt>>
+
+Comma-separated list of groups to add the user to.
+
+=item B<--adduser | -u E<lt>user_listE<gt>>
+
+Comma-separated list of users to add to a specified group.
+
+=item B<conn_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-user --help>
+for a list of all connection options.
+
+=item B<--entity | -e [group | user]>
+
+Required. Entity to perform the operation on (user | group).
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with --help has the same effect.
+
+=item B<--group | -d E<lt>group_nameE<gt>>
+
+Group name of the group.
+
+=item B<--groupid | -D E<lt>group_IDE<gt>>
+
+Group ID of the group.
+
+=item B<--login | -l E<lt>login_IDE<gt>>
+
+Login ID of the user.
+
+=item B<--newpassword | -p E<lt>passwordE<gt>>
+
+Password for the target user.
+
+=item B<--newuserid | -i E<lt>UUIDE<gt>>
+
+UID for the target user.
+
+=item B<--newusername | -n E<lt>nameE<gt>>
+
+User name for the target user.
+
+=item B<--operation | -o [add | modify | delete | list]>
+
+Required. Operation to perform. Specify C<add>, C<modify>, C<delete>, or C<list>.
+
+=item B<--promptpassword> 
+
+Prompts for a password when you make a change to a user. 
+
+=item B<--removegroup | -G E<lt>group_listE<gt>>
+
+Comma-separated list of groups to remove the target user from.
+
+=item B<--removeuser | -U E<lt>user_listE<gt>>
+
+Comma-separated list of users to be removed from the target group.
+
+=item B<--role | -r [admin|read-only|no-access]> 
+
+Role for the target user or group. Specify C<admin>, C<read-only>, or C<no-access>.
+
+=item B<--shell | -s [yes|no]>
+
+Grant shell access to the target user. Default is no shell access. Use this command 
+to change the default, or to revoke shell access rights after they have been granted. 
+Valid values are C<yes> and C<no>.
+
+This option is supported only for ESX. The option is meaningless for ESXi.
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-user --help> for a list of common options including connection options.
+
+Add a user with login ID user27:
+
+ vicfg-user <conn_options> -e user -o add -l user27 -p 27_password
+
+Modify password, user ID, and user name for the user with login ID user27:
+
+ vicfg-user.pl <conn_options> -e user -o modify -l user27 -p 27_password -i <new user id> -n <new user name>
+
+Add the user with user name user27 to a group test:
+
+ vicfg-user <conn_options> -e user -o modify -l user27 -g test
+
+Assign the role read-only to user27 and prompt for a password. 
+
+ vicfg-user <conn_options> -e user -o modify -l user27 --role read-only --promptpassword  
+
+Remove the user with user name user27:
+
+ vicfg-user <conn_options> -e user -o delete -l user27
+
+Add group42 as a group:
+
+ vicfg-user <conn_options> -e group -o add -d group42 -D 501
+
+Add a user "test" to group42:
+
+ vicfg-user <conn_options> -e group -o modify -d group42 -u test
+
+Remove group group42
+
+ vicfg-user <conn_options -e group -o delete -d group42
+
+List groups and users:
+
+ vicfg-user <conn_options> -e group -o list
+
+List users in group42: 
+
+ vicfg-user <conn_options -e group -o list -d group42
+
+Add group group42, with group ID 501 and role read-only: 
+
+ vicfg-user.pl <conn_options> --entity group --operation add --group group42 - -groupid 501 --role read-only
+
+=cut
+

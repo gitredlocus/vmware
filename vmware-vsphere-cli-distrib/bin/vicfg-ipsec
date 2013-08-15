@@ -1,0 +1,950 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2009-2009 VMware, Inc.  All rights reserved.
+#
+#
+# Per spec, no support for '--vihost' flag in KL.Next
+#
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+use MIME::Base64;
+
+my %opts = (
+# cmd action flags
+   "list-sa" => {
+      alias => "l",
+      type => "",
+      help => qq!  "Display Security Associations."  !,
+      required => 0,
+   },
+   "list-sp" => {
+      alias => "L",
+      type => "",
+      help => qq!  "Display Security Policies."  !,
+      required => 0,
+   },
+   "add-sa" => {
+      type => "",
+      help => qq!  "Add an security association"  !,
+      required => 0,
+   },
+   "add-sp" => {
+      type => "",
+      help => qq!  "Add an security policy"  !,
+      required => 0,
+   },
+   "remove-sa" => {
+      type => "",
+      help => qq!  "Remove an security association"  !,
+      required => 0,
+   },
+   "remove-sp" => {
+      type => "",
+      help => qq!  "Remove an security policy"  !,
+      required => 0,
+   },
+   "flush-sa" => {
+      type => "",
+      help => qq!  "Clear out all entries in SA database."  !,
+      required => 0,
+   },
+   "flush-sp" => {
+      type => "",
+      help => qq!  "Clear out all entries in SP database."  !,
+      required => 0,
+   },
+
+# SA add flags
+   "sa-src" => {
+      type => "=s",
+      help => qq!  "Source IP"  !,
+      required => 0,
+   },
+   "sa-dst" => {
+      type => "=s",
+      help => qq!  "Destintation IP"  !,
+      required => 0,
+   },
+   spi => {
+      type => "=s",
+      help => qq!  "SPI as a hex string, format 0x..."  !,
+      required => 0,
+   },
+   "sa-mode" => {
+      type => "=s",
+      help => qq!  "Mode, (tunnel, transport)"  !,
+      required => 0,
+   },
+   ealgo => {
+      type => "=s",
+      help => qq!  "Encryption Algorithm (null, 3des-cbc, aes128-cbc)"  !,
+      required => 0,
+   },
+   ekey => {
+      type => "=s",
+      help => qq!  "Encryption key, a series of hexadecimal digits format(0x...)"  !,
+      required => 0,
+   },
+   ialgo => {
+      type => "=s",
+      help => qq!  "Authentication Algorithm (hmac-sha1, hmac-sha2-256)"  !,
+      required => 0,
+   },
+   ikey => {
+      type => "=s",
+      help => qq!  "Authentication key, a series of hexadecimal digits format(0x...)"  !,
+      required => 0,
+   },
+
+# SP add flags
+   "sp-src" => {
+      type => "=s",
+      help => qq!  "Source IP and prefix length"  !,
+      required => 0,
+   },
+   "sp-dst" => {
+      type => "=s",
+      help => qq!  "Destintation IP and prefix length"  !,
+      required => 0,
+   },
+   "src-port"  => {
+      type => "=i",
+      help => qq!  "Source Port (0-65535)"  !,
+      required => 0,
+   },
+   "dst-port" => {
+      type => "=i",
+      help => qq!  "Destination Port (0-65535)"  !,
+      required => 0,
+   },
+   ulproto => {  # should be --protocol but this blows up connect call ('protocol' in use)
+      type => "=s",
+      help => qq!  "Upper Layer Protocol (any, tcp, udp, icmp6)"  !,
+      required => 0,
+   },
+   dir => {
+      type => "=s",
+      help => qq!  "Direction (in or out)"  !,
+      required => 0,
+   },
+   action => {
+      type => "=s",
+      help => qq!  "Action to take (none, discard, ipsec)"  !,
+      required => 0,
+   },
+   "sp-mode" => {
+      type => "=s",
+      help => qq!  "Mode"  !,
+      required => 0,
+   },
+   "sa-name" => {
+      type => "=s",
+      help => qq!  "Security Association name"  !,
+      required => 0,
+   },
+
+   _default_ => {
+      type => "=s",
+      argval => "<name>",
+      help => qq!
+             On add or remove operation, this is either a saname or spname.
+      !,
+      required => 0,
+   }
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+#
+# cmd options
+my $sad = Opts::get_option('list-sa');
+my $spd = Opts::get_option('list-sp');
+my $add_sa = Opts::get_option('add-sa');
+my $remove_sa = Opts::get_option('remove-sa');
+my $add_sp = Opts::get_option('add-sp');
+my $remove_sp = Opts::get_option('remove-sp');
+my $flushsa = Opts::get_option('flush-sa');
+my $flushsp = Opts::get_option('flush-sp');
+my $g_conf ;
+my $s_conf ;
+
+# SA or SP name
+my $name = Opts::get_option('_default_');
+# SA add opts (8 flags)
+my $sa_sip = Opts::get_option('sa-src');
+my $sa_dip = Opts::get_option('sa-dst');
+my $sa_spi = Opts::get_option('spi');
+my $sa_mode = Opts::get_option('sa-mode');
+my $sa_Ealgo = Opts::get_option('ealgo');
+my $sa_ekey = Opts::get_option('ekey');
+my $sa_ialgo = Opts::get_option('ialgo');
+my $sa_ikey = Opts::get_option('ikey');
+# SP add opts (8 flags)
+my $sp_sip = Opts::get_option('sp-src');
+my $sp_dip = Opts::get_option('sp-dst');
+my $sp_sPort = Opts::get_option('src-port');
+my $sp_dPort = Opts::get_option('dst-port');
+my $sp_proto = Opts::get_option('ulproto');
+my $sp_direction = Opts::get_option('dir');
+my $sp_action = Opts::get_option('action');
+my $sp_mode = Opts::get_option('sp-mode');
+my $sp_saName = Opts::get_option('sa-name');
+
+my $ctrlkey = 'ipv6.ipsec.ctl';
+
+
+# check that there is only one operation at hand
+sub CheckAction {
+    my $cnt = 0;
+    if (defined $sad) {
+        $cnt = $cnt + 1;
+    }
+    if (defined $spd) {
+        $cnt = $cnt + 1;
+    }
+    if (defined $add_sa) {
+        $cnt = $cnt + 1;
+    }
+    if (defined $remove_sa) {
+        $cnt = $cnt + 1;
+    }
+    if (defined $add_sp) {
+        $cnt = $cnt + 1;
+    }
+    if (defined $remove_sp) {
+        $cnt = $cnt + 1;
+    }
+    if (defined $flushsa) {
+        $cnt = $cnt + 1;
+    }
+    if (defined $flushsp) {
+        $cnt = $cnt + 1;
+    }
+    if (defined $g_conf) {
+        $cnt = $cnt + 1;
+    }
+    if (defined $s_conf) {
+        $cnt = $cnt + 1;
+    }
+    Opts::assert_usage($cnt == 1,
+                       "Specify only one of '-l, -L, --remove-sa, --remove-sp, --add-sa, --add-sp, --flush-sa, --flush-sp.");
+}
+
+# change to match esxcfg
+$main::sa_fmt = "%-37s%-35s%-35s%-10s%-10s%-10s%-15s%-15s%-15s%-15s\n";
+$main::sp_fmt = "%-37s%-35s%-10s%-35s%-10s%-12s%-12s%-10s%-12s%-37s\n";
+
+CheckAction();
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['configManager.advancedOption']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+my $adv_opt = Vim::get_view (mo_ref => $host_view->{'configManager.advancedOption'});
+my $rc = 0;
+if (defined $sad) {
+    display_sad($adv_opt);
+} elsif (defined $spd) {
+    display_spd($adv_opt);
+} elsif (defined $add_sa) {
+  $rc = add_sa($adv_opt);
+} elsif (defined $remove_sa) {
+  $rc = del_sa($adv_opt);
+} elsif (defined $add_sp) {
+  $rc = add_sp($adv_opt);
+} elsif (defined $remove_sp) {
+  $rc = del_sp($adv_opt);
+} elsif (defined $flushsa) {
+  $rc = flush_db($adv_opt, "sa");
+} elsif (defined $flushsp) {
+  $rc = flush_db($adv_opt, "sp");
+} else {
+    display_sad();
+    display_spd();
+}
+
+Util::disconnect();
+exit($rc);
+
+sub get_conf
+{
+   my ($adv_opt) = @_;
+   if (-d $g_conf) {
+       if (! -w $g_conf) {
+           Opts::assert_usage(0, "--get-config requires a writeable directory.");
+       }
+       print "INFO: retrieving IKE config files to: '$g_conf'\n";
+       my $configs;
+       eval {
+          $configs = $adv_opt->QueryOptions(name => $ctrlkey);
+       };
+       if ($@) {
+          VIExt::fail("Could not get the list of security associations: " . (@_->fault_string));
+       }
+       my $ctr = 0;
+       foreach (@$configs) {
+           my @recs = split(/\|\|/, $_->value);
+           foreach (@recs) {
+               my ($fn,$value) = split(/:=/, $_);
+               my $outfile = $g_conf . "/" . $fn;
+               umask 077;
+               unless (open FILE, ">" . $outfile) {
+                   print "ERROR: open $outfile failed $!\n";
+                   return 1;
+               }
+               print FILE $value;
+               close(FILE);
+               ++$ctr;
+               printf("INFO: saving file: %s\n", $outfile);
+           }
+       }
+       if ($ctr == 0) {
+           print "INFO: No IKE configuration files returned.\n";
+       } else {
+           printf("INFO: wrote %d files.\n", $ctr);
+       }
+   } else {
+       Opts::assert_usage(0, "--get-config requires a directory to store files retrieved.");
+         return 1;
+   }
+}
+
+sub trim
+{
+    my ($string) = @_;
+    $string =~ s/^\s+//;
+    $string =~ s/\s+$//;
+    return $string;
+}
+sub get_file
+{
+    my ($fn) = @_;
+    unless (open FILE, "<" . $fn) {
+        print "ERROR: open '$fn' for reading failed, $!\n";
+        return "";
+    }
+    my $data = join("",<FILE>);
+    close(FILE);
+    return $data;
+}
+
+sub load_fileset
+{
+    my ($cfg) = @_;
+    my %fs = ();
+    $fs{$cfg} = get_file($cfg);
+    my $found = 0;
+    while ($fs{$cfg} =~ /^\/default\/pki\/mykey\s*=\s*(.+)\s*,\s*([^#\n]+).*$/mg) {
+        $fs{$1} = get_file($1);
+        $fs{$2} = get_file($2);
+        printf("INFO: public key file: %s\n", $1);
+        printf("INFO: private key file: %s\n", $2);
+        $found += 1;
+    }
+    if ($found != 1) {
+        print "ERROR: missing /default/pki/mykey = pubkey-path,privkey-path, $found\n";
+        return "";
+    }
+    while ($fs{$cfg} =~ /^\/remote\/(.*)\/pki\/pubkey\s*=\s*([^#\n]+)/mg) {
+        printf("INFO: server: %s public key file: %s\n", $1 ,$2);
+        $fs{$2} = get_file($2);
+    }
+    my $encode_fs;
+    my $ctr = 0;
+    foreach my $fn (keys %fs) {
+        printf("INFO: encoding %s\n", $fn);
+        my $filename = trim(basename($fn));
+        my $rec = $filename . ":=" . $fs{$fn} . "||";
+        $encode_fs .= $rec;
+        ++$ctr;
+    }
+    printf("INFO: transferring %d files.\n", $ctr);
+    # print "DEBUG: encode_fs = '$encode_fs'";
+    return encode_base64($encode_fs);
+}
+
+sub set_conf
+{
+    my ($adv_opt) = @_;
+    if (-f $s_conf) {
+        my @kvp;
+        my $type;
+        my $encodeSet = load_fileset($s_conf);
+        if ($encodeSet eq "") {
+            return 1;
+        }
+        # format key=value (no spaces)
+        push(@kvp, "type=.ike.");
+        push(@kvp, "action=setconf");
+        push(@kvp, "fileset=$encodeSet");
+        my $payload = join(",", @kvp);
+        my $val = new PrimType($payload, "string");
+        my $opt = new OptionValue(key => $ctrlkey, value => $val);
+        if (defined($ENV{'DEBUGME'}) && $ENV{'DEBUGME'} eq "1") {
+            print "DEBUG: setting key: $ctrlkey to $payload\n";
+        }
+        eval {
+            $adv_opt->UpdateOptions(changedValue => [$opt]);
+        };
+        if ($@) {
+           VIExt::fail("Could not install IKE configuration files: " . ($@->fault_string));
+        }
+
+    } else {
+       Opts::assert_usage(0, "--set-config requires filename of main IKE configuration file.");
+       return 1;
+    }
+    return 0;
+}
+
+sub flush_db
+{
+    my ($adv_opt, $db) = @_;
+    my @kvp;
+    my $type;
+    if ($db eq 'sp') {
+        $type = '.spd.';
+    } elsif ($db eq'sa') {
+        $type = '.sad.';
+    } else {
+        Opts::assert_usage(0, "internal error: invalid argument to sub flush_db");
+        exit 1;
+    }
+    # format key=value (no spaces)
+    push(@kvp, "type=$type");
+    push(@kvp, "action=flush");
+    my $payload = join(",", @kvp);
+    my $val = new PrimType($payload, "string");
+    my $opt = new OptionValue(key => $ctrlkey, value => $val);
+    if (defined($ENV{'DEBUGME'}) && $ENV{'DEBUGME'} eq "1") {
+        print "DEBUG: setting key: $ctrlkey to $payload\n";
+    }
+    eval {
+        $adv_opt->UpdateOptions(changedValue => [$opt]);
+    };
+    if ($@) {
+        VIExt::fail("Could not flush DB: " . ($@->fault_string));
+        return 1;
+    }
+    return 0;
+}
+
+sub del_sa {
+    my ($adv_opt) = @_;
+    Opts::assert_usage(defined($name), "--remove-sa flag requires sa name argument");
+    Opts::assert_usage($name ne "auto", "'auto' cannot be used as SA name");
+    my @kvp;
+    # format key=value (no spaces)
+    push(@kvp, "type=.sad.");
+    push(@kvp, "action=delete");
+    push(@kvp, "saName=$name");
+    my $payload = join(",", @kvp);
+    my $val = new PrimType($payload, "string");
+    my $opt = new OptionValue(key => $ctrlkey, value => $val);
+    if (defined($ENV{'DEBUGME'}) && $ENV{'DEBUGME'} eq "1") {
+        print "DEBUG: setting key: $ctrlkey to $payload\n";
+    }
+    eval{
+        $adv_opt->UpdateOptions(changedValue => [$opt]);
+    };
+    if ($@) {
+       VIExt::fail("Could not delete Security Association: " . ($@->fault_string));
+         return 1;
+    }
+    return 0;
+}
+
+sub VerifySAArgs {
+    Opts::assert_usage(defined($name), "--add-sa flag requires sa name argument");
+    Opts::assert_usage($name ne "auto", "'auto' is reserved and cannot be used
+as SA name");
+    Opts::assert_usage(defined($sa_sip), "--add-sa flag requires --sa-src");
+    Opts::assert_usage(defined($sa_dip), "--add-sa flag requires --sa-dst");
+    Opts::assert_usage(defined($sa_spi), "--add-sa flag requires --spi");
+    Opts::assert_usage(defined($sa_mode), "--add-sa flag requires --sa-mode");
+    Opts::assert_usage(defined($sa_Ealgo), "--add-sa flag requires --ealgo");
+    if (not $sa_Ealgo eq 'null') {
+        Opts::assert_usage(defined($sa_ekey), "--sa_Ealgo value '$sa_Ealgo' requires --ekey");
+    }
+    Opts::assert_usage(defined($sa_ialgo), "--add-sa flag requires --ialgo");
+    Opts::assert_usage(defined($sa_ikey), "--add-sa flag requires --ikey");
+}
+
+sub add_sa {
+    my ($adv_opt) = @_;
+    VerifySAArgs();
+    my @kvp;
+    # format key=value (no spaces)
+    push(@kvp, "type=.sad.");
+    push(@kvp, "action=add");
+    push(@kvp, "saName=$name");
+    push(@kvp, "srcIp=$sa_sip");
+    push(@kvp, "dstIp=$sa_dip");
+    push(@kvp, "spi=$sa_spi");
+    push(@kvp, "mode=$sa_mode");
+    push(@kvp, "ealgo=$sa_Ealgo");
+    if (not $sa_Ealgo eq 'null') {
+        push(@kvp, "ekey=$sa_ekey");
+    }
+    push(@kvp, "authAlgo=$sa_ialgo");
+    push(@kvp, "authKey=$sa_ikey");
+    my $payload = join(",", @kvp);
+    if (defined($ENV{'DEBUGME'}) && $ENV{'DEBUGME'} eq "1") {
+        print "DEBUG: setting key: $ctrlkey to $payload\n";
+    }
+    my $val = new PrimType($payload, "string");
+    my $opt = new OptionValue(key => $ctrlkey, value => $val);
+    eval{
+       $adv_opt->UpdateOptions(changedValue => [$opt]);
+    };
+    if ($@) {
+      VIExt::fail("Could not add Security Association: " . ($@->fault_string));
+      return 1;
+    }
+    return 0;
+}
+
+sub del_sp {
+    my ($adv_opt) = @_;
+    Opts::assert_usage(defined($name), "--remove-sp flag requires sp name argument");
+    my @kvp;
+    # format key=value (no spaces)
+    push(@kvp, "type=.spd.");
+    push(@kvp, "action=delete");
+    push(@kvp, "spName=$name");
+    my $payload = join(",", @kvp);
+    my $val = new PrimType($payload, "string");
+    my $opt = new OptionValue(key => $ctrlkey, value => $val);
+    if (defined($ENV{'DEBUGME'}) && $ENV{'DEBUGME'} eq "1") {
+        print "DEBUG: setting key: $ctrlkey to $payload\n";
+    }
+    eval {
+        $adv_opt->UpdateOptions(changedValue => [$opt]);
+    };
+    if ($@) {
+      VIExt::fail("Could not delete Security Policy: " . ($@->fault_string));
+      return 1;
+    }
+    return 0;
+}
+
+
+sub VerifySPArgs {
+    Opts::assert_usage(defined($name), "--add-sp flag requires sp name argument");
+    Opts::assert_usage(defined($sp_sip), "--add-sp flag requires --srcip");
+    Opts::assert_usage(defined($sp_dip), "--add-sp flag requires --dstip");
+    # src/dest port optional
+    #Opts::assert_usage(defined($sp_sPort), "--add-sp flag requires --src-port");
+    #Opts::assert_usage(defined($sp_dPort), "--add-sp flag requires --dst-port");
+    Opts::assert_usage(defined($sp_proto), "--add-sp flag requires --ulproto");
+    Opts::assert_usage(defined($sp_direction), "--add-sp flag requires --dir");
+    Opts::assert_usage(defined($sp_action), "--add-sp flag requires --action");
+    if($sp_action eq "ipsec"){
+        Opts::assert_usage(defined($sp_saName), "--add-sp flag requires --sa-name");
+        Opts::assert_usage(defined($sp_mode), "--add-sp flag requires --sp-mode");
+    }
+}
+
+sub add_sp {
+    my ($adv_opt) = @_;
+    VerifySPArgs();
+    if (!defined($sp_sPort)) {
+        $sp_sPort = "";
+    }
+    if (!defined($sp_dPort)) {
+        $sp_dPort = "";
+    }
+    if ($sp_action ne "ipsec" ){
+        if(!defined($sp_saName)){
+            $sp_saName="";
+        }
+        if(!defined($sp_mode)){
+#XXX: Workaround for PR#490965.
+            $sp_mode="tunnel";
+        }
+    } else {
+        Opts::assert_usage($sp_saName ne "auto", "SA name 'auto' is reserved");
+    }
+    my @kvp;
+    push(@kvp, "type=.spd.");
+    push(@kvp, "action=add");
+    push(@kvp, "spName=$name");
+    push(@kvp, "spSaName=$sp_saName");
+    my @s_addr = split("/", $sp_sip);
+    my @d_addr = split("/", $sp_dip);
+    if($s_addr[0] eq "any"){
+        push(@kvp, "srcIp=::");
+    }
+    elsif(scalar(@s_addr)==2){
+        push(@kvp, "srcIp=$s_addr[0]");
+    }
+    else{
+        Opts::assert_usage(0, "Format is ipv6-address/prefix-length");
+    }
+    if($d_addr[0] eq "any"){
+        push(@kvp, "dstIp=::");
+    }
+    elsif(scalar(@d_addr)==2){
+        push(@kvp, "dstIp=$d_addr[0]");
+    }
+    else{
+        Opts::assert_usage(0, "Format is ipv6-address/prefix-length");
+    }
+    if(scalar(@s_addr)>1){
+        push(@kvp, "srcPrefix=$s_addr[1]");
+    }
+    else{
+        push(@kvp, "srcPrefix=0");
+    }
+    if(scalar(@d_addr)>1){
+        push(@kvp, "dstPrefix=$d_addr[1]");
+    }
+    else{
+        push(@kvp, "dstPrefix=0");
+    }
+    push(@kvp, "srcPort=$sp_sPort");
+    push(@kvp, "dstPort=$sp_dPort");
+    push(@kvp, "ulProto=$sp_proto");
+    push(@kvp, "mode=$sp_mode");
+    push(@kvp, "direction=$sp_direction");
+    push(@kvp, "matchAction=$sp_action");
+    my $payload = join(",", @kvp);
+    if (defined($ENV{'DEBUGME'}) && $ENV{'DEBUGME'} eq "1") {
+        print "DEBUG: setting key: $ctrlkey to $payload\n";
+    }
+    my $val = new PrimType($payload, "string");
+    my $opt = new OptionValue(key => $ctrlkey, value => $val);
+    eval {
+        $adv_opt->UpdateOptions(changedValue => [$opt]);
+    };
+    if ($@) {
+        VIExt::fail("Could not add Security Policy: " . ($@->fault_string));
+    }
+    return 0;
+}
+
+# reporting subroutines and data
+
+my %hash = ();
+
+sub BuildKV {
+    my ($raw) = @_;
+    %hash = ();
+    my @kva = split(",", $raw);
+    foreach (@kva) {
+        my ($key,$value) = split("=", $_);
+        $hash{$key} = $value;
+# if debug, print "key= $key value = $value\n";
+    }
+}
+
+sub test_hash_membership{
+    my $key = shift;
+    my %hash = @_;
+    return (exists($hash{$key}) && defined($hash{$key})) ? $hash{$key} : '' ;
+}
+
+sub FormatSA {
+   my $line;
+   my $sl = $hash{'softLife'};
+   my $hl = $hash{'hardLife'};
+   if ($sl == 0) {
+       $sl = "infinite";
+   }
+   if ($hl == 0) {
+       $hl = "infinite";
+   }
+   $line = sprintf($main::sa_fmt,
+                   test_hash_membership('saName',%hash),
+                   test_hash_membership('srcIp',%hash),
+                   test_hash_membership('dstIp',%hash),
+                   test_hash_membership('state',%hash),
+                   test_hash_membership('spi',%hash),
+                   test_hash_membership('mode',%hash),
+                   test_hash_membership('ealgo',%hash),
+                   test_hash_membership('authAlgo',%hash),
+                   $sl,$hl);
+   return $line;
+}
+
+
+sub FormatSP {
+    my $line;
+    # "SP Name", "Src Addr", "Src Port", "Dst Addr", "Dst Port", "Protocol", "Flow", "Action", "Mode", "SA Name",
+   if(test_hash_membership('srcPrefix', %hash) && test_hash_membership('srcIp', %hash)){
+        $hash{'srcIp'}="$hash{'srcIp'}/$hash{'srcPrefix'}";
+   }
+   if(test_hash_membership('dstPrefix', %hash) && test_hash_membership('dstIp', %hash)){
+        $hash{'dstIp'}="$hash{'dstIp'}/$hash{'dstPrefix'}";
+   }
+   $line = sprintf($main::sp_fmt,
+                   test_hash_membership('spName',%hash),
+                   test_hash_membership('srcIp',%hash),
+                   test_hash_membership('srcPort',%hash),
+                   test_hash_membership('dstIp',%hash),
+                   test_hash_membership('dstPort',%hash),
+                   test_hash_membership('ulProto',%hash),
+                   test_hash_membership('direction',%hash),
+                   test_hash_membership('matchAction',%hash),
+                   test_hash_membership('mode',%hash),
+                   test_hash_membership('spSaName',%hash));
+    return $line;
+}
+
+sub display_sa {
+    my ($raw) = @_;
+    my @items = split(";", $raw);
+    foreach (@items) {
+        if(defined($_)){
+            BuildKV($_);
+            print FormatSA();
+        }
+#  if debug print "$_\n";
+    }
+}
+
+
+sub display_sad {
+   my ($adv_opt) = @_;
+   my $key = 'ipv6.ipsec.sad';
+   my $sad;
+   eval {
+       $sad = $adv_opt->QueryOptions(name => $key);
+   };
+   if ($@) {
+       VIExt::fail("Could not get the list of security associations: " . (@_->fault_string));
+   }
+   printf($main::sa_fmt,
+          "SA Name",  "Src Addr", "Dst Addr", "State", "SPI", "Mode", "Encrypt Algo", "Auth Algo", "Soft Lifetime", "Hard Lifetime");
+   foreach (@$sad) {
+       display_sa($_->value);
+   }
+}
+
+
+sub display_sp {
+    my ($raw) = @_;
+    my @items = split(";", $raw);
+    foreach (@items) {
+        if(defined($_)){
+            BuildKV($_);
+            print FormatSP();
+        }
+#  if debug print "$_\n";
+    }
+}
+
+sub display_spd {
+   my ($adv_opt) = @_;
+   my $key = 'ipv6.ipsec.spd';
+   my $spd;
+   eval {
+       $spd = $adv_opt->QueryOptions(name => $key);
+   };
+   if ($@) {
+      VIExt::fail("Could not get the list of security policies: " . (@_->fault_string));
+   }
+   printf($main::sp_fmt,
+          "SP Name", "Src Addr", "Src Port", "Dst Addr", "Dst Port", "Protocol", "Flow", "Action", "Mode", "SA Name");
+   foreach (@$spd) {
+       if(defined($_) && defined($_->value)){
+          display_sp($_->value);
+       }
+   }
+}
+
+__END__
+
+=head1 NAME
+
+vicfg-ipsec - configure IPsec properties
+
+=head1 SYNOPSIS
+
+ vicfg-ipsec [<conn_options>]
+     [--action [none|discard|ipsec] |
+      --add-sa <sa> |
+      --add-sp <sp> |
+      --dir [in | out] |
+      --dst-port <port> |
+      --flush-sa |
+      --flush-sp |
+      --ealgo [null | 3des-cbc | aes128-cbc]|
+      --ekey <e_key>|
+      --help |
+      --ialgo [hmac-sha1 | hmac-sha2-256] |
+      --ikey <e_key> |
+      --list-sa <sa> |
+      --list-sp <sp> |
+      --remove-sa <sa> |
+      --remove-sp <sp> |
+      --sa-src <IP> |
+      --sa-name <name> |
+      --sp-dst <destination> |
+      --spi <spi> |
+      --sp-src <source> |
+      --spmode <mode> |
+      --src-port <port> |
+      --ulproto [any | tcp | udp | icmp6]
+
+=head1 DESCRIPTION
+
+vicfg-ipsec allows you to configure IPsec on your ESX/ESXi host. The command supports IPv6 but not IPv4 configuration.
+
+=head1 OPTIONS
+
+=over
+
+=item B<conn_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-ipsec --help>
+for a list of all connection options.
+
+=item B<--action [none|discard|ipsec]>
+
+Action to take. Specify none to to allow all traffic, discard to discard all traffic, or ipsec to 
+use IPsec with the specified authentication and encryption settings. 
+
+=item B<--add-sa E<lt>saE<gt>> 
+
+Adds a security association. Use this option together with the C<--sa-src>, C<--sa-dst>, C<--sa-mode>, and other parameters to
+create a security association. The last parameter is always the name of the association. 
+
+=item B<--add-sp E<lt>spE<gt>> 
+
+Adds a security policy. Use this option together with the <--sp-src>, C<--sp-dst>, C<--src-port>, C<--dst-port> and other parameters
+to create a security policy. You must associate this policy with a named security association. The last
+argument is always the name of the security policy. 
+
+=item B<--dir [in | out]>
+
+Direction, in our out. 
+
+=item B<--dst-port E<lt>portE<gt>>
+
+Destination port (0-65535)
+
+=item B<--ealgo [null | 3des-cbc | aes128-cbc]>
+
+Encryption algorithm. 
+
+=item B<--ekey E<lt>e_keyE<gt>> 
+
+Encryption key; a series of hexadecimal digits preceded with 0x (zero ex).
+
+=item B<--ialgo [hmac-sha1 | hmac-sha2-256]>
+
+Authentication algorithm. 
+
+=item B<--ikey E<lt>i_keyE<gt>> 
+
+Authentication key; a series of hexadecimal digits  preceded with 0x (zero ex).
+
+=item B<--flush-sa>
+
+Clear all entries in the Security Associations (sa) database. B<WARNING> This option 
+clears all entries even if SAs are in use. 
+
+=item B<--flush-sp>
+
+Clear all entries in the  Security Policy (sp) database. B<WARNING> This option 
+clears all entries even if SPs are in use. 
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--list-sa | -l>
+
+Display security sssociations. 
+
+=item B<--list-sp | -L>
+
+Display security policies. 
+
+=item B<--remove-sa E<lt>saE<gt>>
+
+Removes a specified security association. 
+
+=item B<--remove-sp E<lt>spE<gt>>
+
+Removes a specified security policy. 
+
+=item B<--sa-dst E<lt>destination_IPE<gt>>
+
+Destination IP of the Security Association. 
+
+=item B<--sa-src E<lt>source_IPE<gt>>
+
+Source IP of the Security Association. 
+
+=item B<--sa-name E<lt>nameE<gt>> 
+
+Security Association name.
+
+=item B<--sp-dst E<lt>destinationE<gt>>
+
+Destination IP address and prefix length. 
+
+=item B<--spi E<lt>spiE<gt>>
+
+Security parameters index. This index identifies security parameters 
+in combination with IP address. The index must be a hexadecimal number with a 0x prefix. 
+
+=item B<--sp-src E<lt>sourceE<gt>>
+
+Source IP address and prefix length. 
+
+=item B<--spmode [tunnel | transport]> 
+
+Mode, either tunnel or transport. 
+
+=item B<--src-port E<lt>source_portE<gt>> 
+
+Source port (0-65535)
+
+=item B<--ulproto [any | tcp | udp | icmp6]> 
+
+Upper layer protocol. 
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-ipsec --help> for a list of common options including connection options.
+
+Display all current IPsec properties:
+
+  vicfg-ipsec <conn_options> -l | --list-sa
+  vicfg-ipsec <conn_options> -L | --list-sp
+
+Create a security association:
+
+  vicfg-ipsec <conn_options> --add-sa  --sa-src 3ffe:501:ffff:0::a --sa-dst 3ffe:501:ffff:0001:0000:0000:0000:0001 
+              --sa-mode transport --spi 0x1000 
+              --ealgo 3des-cbc --ekey 0x6970763672656164796c6f676f336465736362636f757432 
+              --ialgo hmac-sha1 --ikey 0x6970763672656164796c6f67736861316f757432 sa1
+
+Configure a security policy:
+
+  vicfg-ipsec <conn_options> --add-sp --sp-src=2001:db8:1::/64 --sp-dst=2002:db8:1::/64 
+              --src-port=23 --dst-port=25 --ulproto=tcp --dir=out 
+              --action=ipsec --sp-mode=transport --sa-name sa1 sp1
+
+Remove a security policy:
+
+ vicfg-ipsec <conn_options> --remove-sp sp1
+
+Remove a security association:
+
+ vicfg-ipsec <conn_options> --remove-sa sa1
+
+=cut

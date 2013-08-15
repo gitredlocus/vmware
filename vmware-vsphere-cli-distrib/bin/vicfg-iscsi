@@ -1,0 +1,2265 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2008 VMware, Inc. All rights reserved.
+#
+use strict;
+use warnings;
+use Getopt::Long;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my $PORT = 3260;
+
+my %opts = (
+   'vihost' => {
+      alias => "h",
+      type => "=s",
+      help => qq!
+         The host to use when connecting via a vCenter Server.
+      !,
+      required => 0,
+   },
+   'discovery' => {
+      alias => "D",
+      type => "",
+      help => qq!
+         Discovery addresses properties and configuration.
+      !,
+      required => 0,
+   },
+   'static' => {
+      alias => "S",
+      type => "",
+      help => qq!
+         Static discovery targets properties and configuration.
+      !,
+      required => 0,
+   },
+   'target' => {
+      alias => "T",
+      type => "",
+      help => qq!
+         List all targets information.
+      !,
+      required => 0,
+   },
+   'authentication' => {
+      alias => "A",
+      type => "",
+      help => qq!
+         Authentication properties and configuration.
+      !,
+      required => 0,
+   },
+   'network' => {
+      alias => "N",
+      type => "",
+      help => qq!
+         Network properties and configuration.
+      !,
+      required => 0,
+   },
+   'phba' => {
+      alias => "P",
+      type => "",
+      help => qq!
+         List Phba and node information.
+      !,
+      required => 0,
+   },
+   'lun' => {
+      alias => "L",
+      type => "",
+      help => qq!
+         List active LUNs information.
+      !,
+      required => 0,
+   },
+   'pnp' => {
+      alias => "p",
+      type => "",
+      help => qq!
+         List Physical Network Portal properties.
+      !,
+      required => 0,
+   },
+   'iscsiname' => {
+      alias => "I",
+      type => "",
+      help => qq!
+         List or configure iSCSI initiator name or alias.
+      !,
+      required => 0,
+   },
+   'parameter' => {
+      alias => "W",
+      type => "",
+      help => qq!
+         For iSCSI parameters operations.
+      !,
+      required => 0,
+   },
+   'list' => {
+      alias => "l",
+      type => "",
+      help => qq!
+         List operation.  Used with --discovery, --static, --target, --lun, \
+         --authentication, --phba, --network, --pnp, --iscsiname, --parameter,\
+         --swiscsi or --adapter options.
+      !,
+      required => 0,
+   },
+   'add' => {
+      alias => "a",
+      type => "",
+      help => qq!
+         Add operation.  Used with --discovery or --static option.
+      !,
+      required => 0,
+   },
+   'remove' => {
+      alias => "r",
+      type => "",
+      help => qq!
+         Remove operation.  Used with --discovery or --static option.
+      !,
+      required => 0,
+   },
+   'ip' => {
+      alias => "i",
+      type => "=s",
+      help => qq!
+         Specify IP address or DNS recognized domain name.  Used with \
+         --discovery, --static, --authentication, --network, or \
+         --parameter option.
+      !,
+      required => 0,
+   },
+   'name' => {
+      alias => "n",
+      type => "=s",
+      help => qq!
+         Initiator or target iSCSI name.  Used with --static, \
+         --authentication, --iscsiname, or --parameter option.
+      !,
+      required => 0,
+   },
+   'level' => {
+      alias => "c",
+      type => "=s",
+      help => qq!
+         Authentication level.  Used with --authentication option.
+      !,
+      required => 0,
+   },
+   'method' => {
+      alias => "m",
+      type => "=s",
+      help => qq!
+         Authentication method, allows 'CHAP'.  Used with --authentication \
+         option.
+      !,
+      required => 0,
+   },
+   # bug 591878
+   'chap_username' => {
+      alias => "u",
+      type => "=s",
+      help => qq!
+         'CHAP' Authentication username.  Used with --authentication option.
+      !,
+      required => 0,
+   },
+   'chap_password' => {
+      alias => "w",
+      type => "=s",
+      help => qq!
+         'CHAP' Authentication password.  Used with --authentication option.
+      !,
+      required => 0,
+   },
+   'mchap_username' => {
+      alias => "v",
+      type => "=s",
+      help => qq!
+         'MCHAP' Authentication username.  Used with --authentication option.
+      !,
+      required => 0,
+   },
+   'mchap_password' => {
+      alias => "x",
+      type => "=s",
+      help => qq!
+         'MCHAP' Authentication password.  Used with --authentication option.
+      !,
+      required => 0,
+   },
+   'mutual' => {
+      alias => "b",
+      type => "",
+      help => qq!
+         If set, indicates mutual CHAP.  Used with --authentication option.
+      !,
+      required => 0,
+   },
+   'target_id' => {
+      alias => "t",
+      type => "=s",
+      help => qq!
+         Target ID.  Used with --lun option.
+      !,
+      required => 0,
+   },
+   'subnetmask' => {
+      alias => "s",
+      type => "=s",
+      help => qq!
+         Subnet mask.  Used with --network option.
+      !,
+      required => 0,
+   },
+   'gateway' => {
+      alias => "g",
+      type => "=s",
+      help => qq!
+         Default gateway.  Used with --network option.
+      !,
+      required => 0,
+   },
+   'mtu' => {
+      alias => "M",
+      type => "=s",
+      help => qq!
+         MTU size.  Used with --pnp option.
+      !,
+      required => 0,
+   },
+   'alias' => {
+      alias => "k",
+      type => "=s",
+      help => qq!
+         iSCSI initiator alias name.  Used with --iscsiname option.
+      !,
+      required => 0,
+   },
+   'detail' => {
+      alias => "f",
+      type => "",
+      help => qq!
+         Details of iSCSI parameters.  Used with --parameter option.
+      !,
+      required => 0,
+   },
+   'set' => {
+      alias => "j",
+      type => "=s",
+      help => qq!
+         Set iSCSI parameter specified by <name> to the value specified by \
+         <value>.  Provide <name>=<value> pair to this option.  The <name> \
+         can be one of the parameter names listed in the --parameter --list \
+         option plus 'dataDigestType', or 'headerDigestType' when used with \
+         --parameter option.  The <name> can be 'ARP' when used with \
+         --network option.
+      !,
+      required => 0,
+   },
+   'reset' => {
+      alias => "o",
+      type => "=s",
+      help => qq!
+         Reset target level specified iSCSI parameter to be inherited from \
+         adapter level. Provide <name>.  The <name> can be one of the \
+         parameter names listed in the --parameter --list option. Used with \
+         --parameter option.
+      !,
+      required => 0,
+   },
+   'reset_auth' => {
+      alias => "z",
+      type => "",
+      help => qq!
+         Reset target level authentication properties to be inherited from \
+         adapter level.  Used with --authentication option.
+      !,
+      required => 0,
+   },
+   'swiscsi' => {
+      alias => "E",
+      type => "",
+      help => qq!
+         Software iSCSI enabling configuration or information.
+      !,
+      required => 0,
+   },
+   'enable' => {
+      alias => "e",
+      type => "",
+      help => qq!
+         Enable operation.  Used with --swiscsi option.
+      !,
+      required => 0,
+   },
+   'disable' => {
+      alias => "q",
+      type => "",
+      help => qq!
+         Disable operation.  Used with --swiscsi option.
+      !,
+      required => 0,
+   },
+   'adapter' => {
+      alias => "H",
+      type => "",
+      help => qq!
+         List iSCSI adapter(s).
+      !,
+      required => 0,
+   },
+   '_default_' => {
+      type => "=s",
+      argval => "vmhba",
+      help => qq!
+         Adapter name. Not used with --swiscsi, --adapter option.
+      !,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $discovery = Opts::get_option('discovery');
+my $static = Opts::get_option('static');
+my $target = Opts::get_option('target');
+my $auth = Opts::get_option('authentication');
+my $network = Opts::get_option('network');
+my $phba = Opts::get_option('phba');
+my $lun = Opts::get_option('lun');
+my $iqn = Opts::get_option('iscsiname');
+my $list = Opts::get_option('list');
+my $add = Opts::get_option('add');
+my $remove = Opts::get_option('remove');
+my $ip = Opts::get_option('ip');
+my $name = Opts::get_option('name');
+my $level = Opts::get_option('level');
+my $method = Opts::get_option('method');
+# bug 591878
+my $chap_username = Opts::get_option('chap_username');
+my $chap_password = Opts::get_option('chap_password');
+my $mchap_username = Opts::get_option('mchap_username');
+my $mchap_password = Opts::get_option('mchap_password');
+my $mutual = Opts::get_option('mutual');
+my $target_id = Opts::get_option('target_id');
+my $subnet_mask = Opts::get_option('subnetmask');
+my $gateway = Opts::get_option('gateway');
+my $pnp = Opts::get_option('pnp');
+my $mtu = Opts::get_option('mtu');
+my $alias = Opts::get_option('alias');
+my $params = Opts::get_option('parameter');
+my $detail = Opts::get_option('detail');
+my $param = Opts::get_option('set');
+my $reset = Opts::get_option('reset') || 0;
+my $reset_auth = Opts::get_option('reset_auth') || 0;
+my $swiscsi = Opts::get_option('swiscsi');
+my $enable = Opts::get_option('enable');
+my $disable = Opts::get_option('disable');
+my $dev = Opts::get_option('adapter');
+my $adapter = Opts::get_option('_default_');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['config.product.version', 'configManager.storageSystem']);
+Opts::assert_usage($host_view, "Invalid host.");
+
+check_version();
+
+my $ss = Vim::get_view (mo_ref => $host_view->{'configManager.storageSystem'});
+if (!$ss->storageDeviceInfo) {
+   VIExt::fail("StorageDeviceInfo is not defined.");
+}
+
+my $hbas = $ss->storageDeviceInfo->hostBusAdapter;
+my $hba = undef;
+my $usage_error = 0;
+
+if (defined $adapter) {
+   my $found = 0;
+   foreach my $h (@$hbas) {
+      if ($h->device eq $adapter && $h->isa('HostInternetScsiHba')) {
+         $found = 1;
+         $hba = $h;
+         last;
+      }
+   }
+   if (!$found) {
+      VIExt::fail("Adapter $adapter is not an iSCSI adapter.");
+   }
+}
+
+if ($discovery) {
+   Opts::assert_usage($adapter, "adapter_name is required.");
+   discovery_op();
+} elsif ($static) {
+   Opts::assert_usage($adapter, "adapter_name is required.");
+   static_op();
+} elsif ($auth) {
+   Opts::assert_usage($adapter, "adapter_name is required.");
+   authentication_op();
+} elsif ($target) {
+   Opts::assert_usage($adapter, "adapter_name is required.");
+   target_op();
+} elsif ($network) {
+   Opts::assert_usage($adapter, "adapter_name is required.");
+   network_op();
+} elsif ($phba) {
+   Opts::assert_usage($adapter, "adapter_name is required.");
+   phba_op();
+} elsif ($lun) {
+   Opts::assert_usage($adapter, "adapter_name is required.");
+   lun_op();
+} elsif ($pnp) {
+   Opts::assert_usage($adapter, "adapter_name is required.");
+   pnp_op();
+} elsif ($iqn) {
+   Opts::assert_usage($adapter, "adapter_name is required.");
+   iscsiname_op();
+} elsif ($params) {
+   Opts::assert_usage($adapter, "adapter_name is required.");
+   parameter_op();
+} elsif ($swiscsi) {
+   swiscsi_op();
+} elsif ($dev) {
+   adapter_op();
+} else {
+   Opts::usage();
+   exit 1;
+}
+
+if ($usage_error) {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+
+sub check_version {
+   my $host_version = $host_view->{'config.product.version'};
+   if ($host_version ne 'e.x.p' && $host_version !~ /^4./ && $host_version !~ /^5./) {
+      VIExt::fail("ESX host version is $host_version. " .
+                  "This operation is supported on ESX 4.x, ESXi 4.x, ESXi 5.x or " .
+                  "through VC 4.x, VC 5.x");
+   }
+}
+
+sub discovery_op {
+   my $discCapa = $hba->discoveryCapabilities;
+   my $discProp = $hba->discoveryProperties;
+
+   if ($list) {
+      print "\n=========Discovery Properties for Adapter $adapter=========\n";
+      print "iSnsDiscoverySettable         : " .
+                  getValue($discCapa->iSnsDiscoverySettable) . "\n";
+      print "iSnsDiscoveryEnabled          : " .
+                  getValue($discProp->iSnsDiscoveryEnabled) . "\n";
+      print "staticDiscoverySettable       : " .
+                  getValue($discCapa->staticTargetDiscoverySettable) . "\n";
+      print "staticDiscoveryEnabled        : " .
+                  getValue($discProp->staticTargetDiscoveryEnabled) . "\n";
+      print "sendTargetsDiscoverySettable  : " .
+                  getValue($discCapa->sendTargetsDiscoverySettable) . "\n";
+      print "sendTargetsDiscoveryEnabled   : " .
+                  getValue($discProp->sendTargetsDiscoveryEnabled) . "\n";
+      print "slpDiscoverySettable          : " .
+                  getValue($discCapa->slpDiscoverySettable) . "\n";
+      print "slpDiscoveryEnable            : " .
+                  getValue($discProp->slpDiscoveryEnabled) . "\n";
+
+      my $sendTargets = $hba->configuredSendTarget;
+      if ($sendTargets) {
+         foreach my $sendTarget (@$sendTargets) {
+            print "DISCOVERY ADDRESS             : " .
+                             getValue($sendTarget->address) . ":" .
+                             getValue($sendTarget->port) . "\n";
+         }
+      } else {
+            print "No discovery addresses found.\n";
+      }
+      my $staticTargets = $hba->configuredStaticTarget;
+      if ($staticTargets) {
+         foreach my $staticTarget (@$staticTargets) {
+            print "STATIC DISCOVERY TARGET\n";
+            print "   NAME     : " . getValue($staticTarget->iScsiName) . "\n";
+            print "   ADDRESS  : " . getValue($staticTarget->address) . ":" .
+                                     getValue($staticTarget->port) . "\n";
+         }
+      }
+   } elsif ($add || $remove) {
+      Opts::assert_usage($ip, "Discovery address is required.");
+      my @addr = split(':', $ip);
+      my $target = new HostInternetScsiHbaSendTarget();
+      $target->{'address'} = $addr[0];        # IP or domain_name
+      $target->{'port'} = $addr[1] || $PORT;
+      eval {
+         if ($add) {
+            print "Adding discovery address " . $target->{address} . ":" .
+                                                $target->{port} . " ...\n";
+            $ss->AddInternetScsiSendTargets(iScsiHbaDevice => $adapter, 
+                                                   targets => ($target));
+            # bug 377776
+            print "A rescan of the host is recommended for this configuration change.\n";
+         } else {
+            print "Removing discovery address " . $target->{address} . ":" .
+                                                  $target->{port} . " ...\n";
+            $ss->RemoveInternetScsiSendTargets(iScsiHbaDevice => $adapter,
+                                                      targets => ($target));
+            print "A rescan of the host is recommended for this configuration change.\n";
+         }
+      };
+      if ($@) {
+         VIExt::fail("Operation failed : " . $@->fault_string);
+      }
+   } else {
+      $usage_error = 1;
+   }
+}
+
+sub static_op {
+   my $discCapa = $hba->discoveryCapabilities;
+   my $discProp = $hba->discoveryProperties;
+   if ($list) {
+      my $staticTargets = $hba->configuredStaticTarget;
+      if ($staticTargets) {
+         foreach my $staticTarget (@$staticTargets) {
+            print "STATIC DISCOVERY TARGET\n";
+            print "   NAME     : " . getValue($staticTarget->iScsiName) . "\n";
+            print "   ADDRESS  : " . getValue($staticTarget->address) . ":" .
+                                     getValue($staticTarget->port) . "\n";
+         }
+      } else {
+         print "No static target found.\n";
+      }
+   } elsif ($add || $remove) {
+      Opts::assert_usage($ip, "Discovery target address is required.");
+      Opts::assert_usage($name, "Discovery target iscsi name is required.");      
+      my @addr = split(':', $ip);
+      my $target = new HostInternetScsiHbaStaticTarget();
+      $target->{address} = $addr[0];        # IP or domain_name
+      $target->{port} = $addr[1] || $PORT;
+      $target->{iScsiName} = $name;
+      eval {
+         if ($add) {
+            print "Adding static discovery target " . 
+                                           $target->{address} . ":" .
+                                           $target->{port} . ", iqn = " .
+                                           $target->{iScsiName} . ", ...\n";
+            $ss->AddInternetScsiStaticTargets(iScsiHbaDevice => $adapter,
+                                              targets => ($target));
+         } else {
+            print "Removing static discovery target " .
+                                   $target->{address} . ":" .
+                                   $target->{port} . ", iqn = " .
+                                   $target->{iScsiName} . ", ...\n";
+            $ss->RemoveInternetScsiStaticTargets(iScsiHbaDevice => $adapter,
+                                                 targets => ($target));
+         }
+      };
+      if ($@) {
+         VIExt::fail("Operation failed : " . $@->fault_string);
+      }
+   } else {
+      $usage_error = 1;
+   }
+}
+
+sub authentication_op {
+   my $authCapa = $hba->authenticationCapabilities;
+   if ($list) {
+      listAuthMethods($authCapa);
+   } elsif ($method) { # setting or resetting properties
+      if ($method ne 'CHAP') {
+         VIExt::fail("Unsupported authentication method : $method");
+      }
+
+      # bug 384544
+      if (defined $name && !defined $ip) {
+         VIExt::fail("For setting authentication properties, --name option should only be used with --ip option.");
+      }
+
+      Opts::assert_usage($level||$reset_auth,
+                         "--level or --reset_auth is required."); 
+      my $found = 0; # indicate the target can be found
+      my $prohibited = 1;  # flag to indicate CHAP or no CHAP authentication
+      my $mchapprohibited = 0; # flag to indicate chap level is required and to set mchap level to prohibited.
+
+      #bug 591878
+      if (defined $level && $level =~ /required/i) {
+         checkChapLevel($level);
+         $prohibited = 0;
+         # bug 591878
+         if ($mutual) {
+            if (!$mchap_username || !$chap_username) {
+               VIExt::fail("'MCHAP' and 'CHAP' username are both required.");
+            }
+            #bug 614647
+            if (!$chap_password) {
+               $chap_password = getPassword("'CHAP' password");
+            }
+            if (!$mchap_password) {
+               $mchap_password = getPassword("'MCHAP' password");
+            }
+            if (!$mchap_password || !$chap_password) {
+               VIExt::fail("'MCHAP' and 'CHAP' username and password are both required.");
+            }
+         } else {
+            if (!$chap_username) {
+               VIExt::fail("'CHAP' username is required.");
+            }
+            #bug 614647
+            if (!$chap_password) {
+               $chap_password = getPassword("'CHAP' password");
+            }
+            if (!$chap_password) {
+               VIExt::fail("'CHAP' username and password are required.");
+            }
+         }
+      } else { # for level is prohibited or reset operation
+         if (defined $level && $level !~ /prohibited/i) {
+            checkChapLevel($level);
+            $prohibited = 0;
+            $mchap_username = undef;
+            $mchap_password = undef;
+         } else {
+            $chap_username = undef;
+            $chap_password = undef;
+         }
+         $mchapprohibited = 1;
+      }
+
+      my $ap = undef;
+      if ($ip) {    # target level
+         my @addr = split(':', $ip);
+         my $addr = $addr[0];
+         my $port = $addr[1] || $PORT;
+         my $targetSet = new HostInternetScsiHbaTargetSet();
+         my @targets = undef;
+         my $targets = undef;
+         my $target = undef;
+         my $targetType = undef;
+         if ($name) {    # for static target
+            $targetType = 'staticTargets';
+            $targets = $hba->configuredStaticTarget;
+            if ($targets) {
+               foreach my $t (@$targets) {
+                  if ($t->address eq $addr && $t->port eq $port && 
+                      $t->iScsiName eq $name) {
+                     $target = $t;
+                     $found = 1;
+                     last;
+                  }
+               }
+            }
+         } else {
+            $targetType = 'sendTargets'; 
+            $targets = $hba->configuredSendTarget;
+            foreach my $t (@$targets) {
+               if ($t->address eq $addr && $t->port eq $port) {
+                  $target = $t;
+                  $found = 1;
+                  last;
+               }
+            }
+         }
+
+         if (!$found) {
+            VIExt::fail("No specified target found.");
+         }
+
+         @targets = ($target);
+         $targetSet->{$targetType} = \@targets;
+         $ap = $target->authenticationProperties;
+         if ($mutual) {
+            if ($reset_auth) {
+               $ap->{mutualChapInherited} = 'true';
+            } else {
+               # bug 591878
+               $ap->{mutualChapAuthenticationType} = $mchapprohibited ? 'chapProhibited' : 'chapRequired';
+               $ap->{mutualChapInherited} = 'false';
+               $ap->{mutualChapName} = $mchap_username;
+               $ap->{mutualChapSecret} = $mchap_password;
+
+               $ap->{chapAuthEnabled} = $prohibited? 'false' : 'true';
+               $ap->{chapAuthenticationType} = $level;
+               $ap->{chapInherited} = 'false';
+
+               $ap->{chapName} = $chap_username;
+               $ap->{chapSecret} = $chap_password;
+            }
+         } else {
+            # bug 591878
+            if ($ap->{mutualChapAuthenticationType} !~ /prohibited/i && (!$mchap_username || !$mchap_password)) {
+               VIExt::fail("'MCHAP' and 'CHAP' username or password are both required.");
+            }
+            if ($reset_auth) {
+               $ap->{chapInherited} = 'true';
+            } else {
+               $ap->{chapAuthEnabled} = $prohibited? 'false' : 'true';
+               $ap->{chapAuthenticationType} = $level;
+               $ap->{chapInherited} = 'false';
+               # bug 591878
+               $ap->{chapName} = $chap_username;
+               $ap->{chapSecret} = $chap_password;
+
+               if ($mchap_username) {
+                  $ap->{mutualChapName} = $mchap_username;
+                  $ap->{mutualChapSecret} = $mchap_password;
+               }
+            }
+         }
+         updateAuthProperties($ap, $targetSet);
+      } else { # adapter level
+         if ($reset_auth) {
+            VIExt::fail("Only target level authentication resetting is ".
+                "supported."); 
+         }
+         $ap = $hba->authenticationProperties;
+         if ($mutual) {
+            # bug 591878
+            $ap->{mutualChapAuthenticationType} = $mchapprohibited ? 'chapProhibited' : 'chapRequired';
+            $ap->{mutualChapName} = $mchap_username;
+            $ap->{mutualChapSecret} = $mchap_password;
+
+            $ap->{chapAuthEnabled} = $prohibited? 'false' : 'true';
+            $ap->{chapAuthenticationType} = $level;
+
+            $ap->{chapName} = $chap_username;
+            $ap->{chapSecret} = $chap_password;
+         } else {
+            # bug 591878
+            if ($ap->{mutualChapAuthenticationType} !~ /prohibited/i && (!$mchap_username || !$mchap_password)) {
+               VIExt::fail("'MCHAP' and 'CHAP' username or password are both required.");
+            }
+            $ap->{chapAuthEnabled} = $prohibited? 'false' : 'true';
+            $ap->{chapAuthenticationType} = $level;
+            $ap->{chapName} = $chap_username;
+            $ap->{chapSecret} = $chap_password;
+
+            if ($mchap_username) {
+               $ap->{mutualChapName} = $mchap_username;
+               $ap->{mutualChapSecret} = $mchap_password;
+            }
+         }
+         updateAuthProperties($ap);
+      }
+   } else {
+      $usage_error = 1;
+   }
+}
+
+sub listAuthMethods {
+   # bug 472626
+   if ($method) {
+      if ($method ne 'CHAP') {
+         VIExt::fail("Unsupported authentication method : $method");
+      }
+      my $hbas = $ss->storageDeviceInfo->hostBusAdapter;
+      if($mutual) {
+         foreach my $h (@$hbas) {
+            if ($h->isa('HostInternetScsiHba')) {
+               print "Mutual CHAP:\n\n";
+               print "CHAP Authentication Parameters for Adapter " . $h->device . "\n";
+               print "Chap Type:   " . $h->authenticationProperties->mutualChapAuthenticationType . "\n";
+               print "Name:        " . $h->authenticationProperties->mutualChapName . "\n";
+               print "Secret:      " . $h->authenticationProperties->mutualChapSecret . "\n";
+
+               if(defined $ip) {
+                  print "\nSend Target Server Settings \n\n";
+                  my $send_target = $h->configuredSendTarget;
+                  foreach(@$send_target) {
+                     if($ip eq $_->address.":".$_->port || $ip eq $_->address) {
+                        print "iSCSI Server:              " . $_->address . "\n";
+                        print "Port:                      " . $_->port . "\n";
+                        print "Inheritance:               " . $_->parent . "\n";
+                        print "Chap Type:                 " . $_->authenticationProperties->mutualChapAuthenticationType . "\n";
+                        print "Name:                      " . $_->authenticationProperties->mutualChapName . "\n";
+                        print "Secret:                    " . $_->authenticationProperties->mutualChapSecret . "\n";
+                        print "Inherit From Parent:       " . ($_->authenticationProperties->mutualChapInherited ? 'Yes' : 'No') . "\n";
+                        print "\n";
+                     }
+                  }
+                  if(defined $name) {
+                     print "\nStatic Target Server Settings \n\n";
+                     my $static_target = $h->configuredStaticTarget;
+                     foreach(@$static_target) {
+                        if(($ip eq $_->address.":".$_->port || $ip eq $_->address) && $name eq $_->iScsiName) {
+                           print "iSCSI Server:              " . $_->address . "\n";
+                           print "Port:                      " . $_->port . "\n";
+                           print "Inheritance:               " . $_->parent . "\n";
+                           print "iSCSI Name:                " . $_->iScsiName . "\n";
+                           print "Chap Type:                 " . $_->authenticationProperties->mutualChapAuthenticationType . "\n";
+                           print "Name:                      " . $_->authenticationProperties->mutualChapName . "\n";
+                           print "Secret:                    " . $_->authenticationProperties->mutualChapSecret . "\n";
+                           print "Inherit From Parent:       " . ($_->authenticationProperties->mutualChapInherited ? 'Yes' : 'No') . "\n";
+                           print "\n";
+                        }
+                     }
+                  }
+               }
+               if(defined $name && !defined $ip) {
+                  VIExt::fail("\nFor displaying CHAP properties, --name option should only be used with --ip option.");
+               }
+            }
+         }
+      }
+      else {
+         foreach my $h (@$hbas) {
+            if ($h->isa('HostInternetScsiHba')) {
+               print "Initiator CHAP:\n\n";
+               print "CHAP Authentication Parameters for Adapter " . $h->device . "\n";
+               print "Chap Type:   " . $h->authenticationProperties->chapAuthenticationType . "\n";
+               print "Name:        " . $h->authenticationProperties->chapName . "\n";
+               print "Secret:      " . $h->authenticationProperties->chapSecret . "\n";
+               if(defined $ip) {
+                  print "\nSend Target Server Settings \n\n";
+                  my $send_target = $h->configuredSendTarget;
+                  foreach(@$send_target) {
+                     if($ip eq $_->address.":".$_->port || $ip eq $_->address) {
+                        print "iSCSI Server:              " . $_->address . "\n";
+                        print "Port:                      " . $_->port . "\n";
+                        print "Inheritance:               " . $_->parent . "\n";
+                        print "Chap Type:                 " . $_->authenticationProperties->chapAuthenticationType . "\n";
+                        print "Name:                      " . $_->authenticationProperties->chapName . "\n";
+                        print "Secret:                    " . $_->authenticationProperties->chapSecret . "\n";
+                        print "Inherit From Parent:       " . ($_->authenticationProperties->chapInherited ? 'Yes' : 'No') . "\n";
+                        print "\n";
+                     }
+                  }
+                  if(defined $name) {
+                     print "\nStatic Target Server Settings \n\n";
+                     my $static_target = $h->configuredStaticTarget;
+                     # bug 485366
+                     foreach(@$static_target) {
+                        if(($ip eq $_->address.":".$_->port || $ip eq $_->address) && $name eq $_->iScsiName) {
+                           print "iSCSI Server:              " . $_->address . "\n";
+                           print "Port:                      " . $_->port . "\n";
+                           print "Inheritance:               " . $_->parent . "\n";
+                           print "iSCSI Name:                " . $_->iScsiName . "\n";
+                           print "Chap Type:                 " . $_->authenticationProperties->chapAuthenticationType . "\n";
+                           print "Name:                      " . $_->authenticationProperties->chapName . "\n";
+                           print "Secret:                    " . $_->authenticationProperties->chapSecret . "\n";
+                           print "Inherit From Parent:       " . ($_->authenticationProperties->chapInherited ? 'Yes' : 'No') . "\n";
+                           print "\n";
+                        }
+                     }
+                  }
+               }
+               if(defined $name && !defined $ip) {
+                  VIExt::fail("\nFor displaying CHAP properties, --name option should only be used with --ip option.");
+               }
+            }
+         }
+      }
+   }
+   else {
+      my ($capacity) = @_;
+      print "---------------Inititator Authentication ------------\n";
+      print "\nSupported Authentication Methods for Adapter " . 
+            "$adapter:\n";
+      if (defined $capacity->chapAuthSettable) {
+         print " IMA_AUTHMETHOD_NONE\n";
+         if ($capacity->chapAuthSettable) {
+            print " IMA_AUTHMETHOD_CHAP\n";
+         }
+      }
+      if (defined $capacity->mutualChapSettable) {
+         print "---------------Mutual Authentication ------------\n";
+         print "\nSupported Authentication Methods for Adapter " . 
+               "$adapter:\n";
+         print " IMA_AUTHMETHOD_NONE\n";
+         if ($capacity->mutualChapSettable) {
+            print " IMA_AUTHMETHOD_CHAP\n";
+         }
+      }
+   }
+}
+
+sub updateAuthProperties {
+   my ($properties, $targetSet) = @_;
+   eval {
+      if ($targetSet) {
+         $ss->UpdateInternetScsiAuthenticationProperties(
+                                  iScsiHbaDevice => $adapter,
+                                  targetSet => $targetSet,
+                                  authenticationProperties => $properties);
+      } else {
+         $ss->UpdateInternetScsiAuthenticationProperties(
+                                  iScsiHbaDevice => $adapter,
+                                  authenticationProperties => $properties);
+      }
+   };
+   if ($@) {
+      VIExt::fail("Update authentication properties failed : " .
+                                               $@->fault_string);
+   } else {
+      print "Successfully updated Authentication properties.\n";
+   }
+}
+
+sub network_op {
+   if ($hba->isSoftwareBased) {
+      VIExt::fail("Error: Unsupported feature for this adapter");
+   }
+   my $ipcapa = $hba->ipCapabilities;
+   my $ipprop = $hba->ipProperties;
+   if ($list) {
+      print "IP CONFIG SETTABLE                      : " .
+            getValue($ipcapa->addressSettable) . "\n";
+      print "IP ADDRESS                              : " .
+            getValue($ipprop->address) . "\n";
+      print "ARP REDIRECT SETTABLE                   : " .
+            getValue($ipcapa->arpRedirectSettable) . "\n";
+      print "ARP REDIRECTION ENABLED                 : " .
+            getValue($ipprop->arpRedirectEnabled) . "\n";
+      print "MTU SETTABLE                            : " .
+            getValue($ipcapa->mtuSettable) . "\n";
+      print "MTU SIZE                                : " .
+            getValue($ipprop->mtu) . "\n";
+      print "SUBNET MASK SETTABLE                    : " .
+            getValue($ipcapa->subnetMaskSettable) . "\n";
+      my $sub = getValue($ipprop->subnetMask);
+      print "SUBNET MASK VALID                       : " .
+            (($sub eq "Unset" || $sub eq "0.0.0.0")? 0 : 1) . "\n";
+      print "SUBNET MASK                             : " .
+            getValue($ipprop->subnetMask) . "\n";
+      print "DEFAULT GATEWAY SETTABLE                : " .
+            getValue($ipcapa->defaultGatewaySettable) . "\n";
+      my $gw = getValue($ipprop->defaultGateway);
+      print "DEFAULT GATEWAY VALID                   : " .
+            (($gw eq "Unset" || $gw eq "0.0.0.0")? 0 : 1) . "\n";
+      print "DEFAULT GATEWAY                         : " .
+            getValue($ipprop->defaultGateway) . "\n";
+      print "PRIMARY DNS SETTABLE                    : " .
+            getValue($ipcapa->primaryDnsServerAddressSettable) . "\n";
+      my $pdns = getValue($ipprop->primaryDnsServerAddress);
+      print "PRIMARY DNS VALID                       : " .
+            (($pdns eq "Unset" || $pdns eq "0.0.0.0")? 0 : 1) . "\n";
+      print "PRIMARY DNS ADDRESS                     : " .
+            getValue($ipprop->primaryDnsServerAddress) . "\n";
+      print "ALTERNATE DNS SETTABLE                  : " .
+            getValue($ipcapa->alternateDnsServerAddressSettable) . "\n";
+      my $adns = getValue($ipprop->alternateDnsServerAddress);
+      print "ALTERNATE DNS VALID                     : " .
+            (($adns eq "Unset" || $adns eq "0.0.0.0")? 0 : 1) . "\n";
+      print "ALTERNATE DNS ADDRESS                   : " .
+            getValue($ipprop->alternateDnsServerAddress) . "\n";
+   } else {
+      my $p = undef;
+      if (defined $param) {
+         if ($param =~ /^ARP=(true|false|1|0)$/i) {
+            $p = setIPProp("arpRedirectEnabled", $1, "arpRedirectSettable");
+            updateIPProp($p);
+         }
+      } elsif (defined $ip || defined $subnet_mask || defined $gateway) {
+         if ($ip) {
+            $p = setIPProp("address", $ip, "addressSettable");
+         }
+         if ($subnet_mask) {
+            $p = setIPProp("subnetMask", $subnet_mask,
+                           "subnetMaskSettable", $p);
+         }
+         if ($gateway) {
+            $p = setIPProp("defaultGateway", $gateway,
+                           "defaultGatewaySettable", $p);
+         }
+         updateIPProp($p);
+      } else {
+         $usage_error = 1;
+      }
+   }
+}
+
+sub setIPProp {
+   my ($propName, $propValue, $settable, $prop) = @_;
+   my $ipcapa = $hba->ipCapabilities;
+   if (!defined($settable) || $ipcapa->$settable) {
+      if (!defined $prop) {
+         $prop = new HostInternetScsiHbaIPProperties();
+         my $p = $hba->ipProperties;
+         $prop->{"mac"} = $p->mac;
+         $prop->{"address"} = $p->address;
+         $prop->{"dhcpConfigurationEnabled"} = $p->dhcpConfigurationEnabled;
+         $prop->{"subnetMask"} = $p->subnetMask;
+         $prop->{"defaultGateway"} = $p->defaultGateway;
+      }
+      # Over-write the property that user would like to set
+      $propValue =~ s/true/1/i;
+      $propValue =~ s/false/0/i;
+      $prop->{"$propName"} = $propValue;
+      return $prop;
+   } else {
+      VIExt::fail("IP property $propName is not settable.");
+   } 
+}
+
+sub updateIPProp {
+   my ($prop) = @_;
+   if (defined $prop) {
+      eval {
+         $ss->UpdateInternetScsiIPProperties (
+                             iScsiHbaDevice => $adapter,
+                             ipProperties => $prop);
+         };
+      if ($@) {
+         VIExt::fail("Set IP property failed : " . $@->fault_string);
+      }
+   } else {
+      VIExt::fail("IP property is not defined.");
+   }
+}
+
+sub phba_op {
+   if ($list) {
+      my $vendor = '';
+      my $description = '';
+      my $serial = '';
+      my $settable = '';
+      if ($hba->isSoftwareBased) {
+         $vendor = 'VMware';
+         $description = 'VMware Software Initiator';
+      }
+      print "\n=========PHBA Properties for Adapter $adapter=========\n";
+      print "VENDOR                      : $vendor\n";
+      print "MODEL                       : " . getValue($hba->model) . "\n";
+      print "DESCRIPTION                 : $description\n";
+      print "SERIAL NUMBER               : $serial\n";
+      print "\n=========Node Properties for Adapter $adapter=========\n";
+      print "NODE NAME VALID             : " .
+                                         (defined $hba->iScsiName || 0) ."\n";
+      print "NODE NAME                   : " . getValue($hba->iScsiName) ."\n";
+      print "NODE ALIAS VALID            : " .
+                                         (defined $hba->iScsiAlias || 0) ."\n";
+      print "NODE ALIAS                  : " . getValue($hba->iScsiAlias)."\n";
+      print "NODE NAME AND ALIAS SETTABLE: $settable\n";
+   } else {
+      $usage_error = 1;
+   }
+}
+
+sub target_op {
+   if ($list) {
+      my $staticTargets = $hba->configuredStaticTarget;
+      if (!$staticTargets) {
+        VIExt::fail("No target configured.");
+      }
+
+      my $targetAlias = '';
+      foreach my $staticTarget (@$staticTargets) {
+         print "\n-----------------------------------------\n";
+         print "NAME                              : " .
+                                   getValue($staticTarget->iScsiName) . "\n";
+         print "ALIAS                             : " . $targetAlias . "\n";
+         print "DISCOVERY METHOD FLAGS            : 0\n";
+         print "SEND TARGETS DISCOVERY SETTABLE   : " .
+                                    getValue($hba->discoveryCapabilities->
+                                    sendTargetsDiscoverySettable) . "\n";
+         # bug 423756
+         # print "SEND TARGETS DISCOVERY ENABLED    : " .
+         #                           getValue($hba->discoveryProperties->
+         #                           sendTargetsDiscoveryEnabled) . "\n";
+         my $addr = $staticTarget->address . ":" . $staticTarget->port;
+         print "Portal 0                          : $addr\n";
+         print "\n-----------------------------------------\n";
+      }
+   } else {
+      $usage_error = 1;
+   }
+}
+
+sub lun_op {
+   my $scsiLuns = $ss->storageDeviceInfo->scsiLun;
+   if ($list) {
+      my @tokens = undef;
+      my %luninfo = ();
+      my %target = ();
+      my $adpts = $ss->storageDeviceInfo->plugStoreTopology->adapter;
+      my $paths = $ss->storageDeviceInfo->plugStoreTopology->path;
+      foreach my $adpt (@$adpts) {
+         my $i = 0;
+         @tokens = split('-', $adpt->key);
+         if ($tokens[-1] eq $adapter) {
+            my $ps = $adpt->path;
+            if ($ps) {
+               foreach my $p (@$ps) {
+                  @tokens = split(',', $p);
+                  my $targetName = $tokens[1];
+                  foreach my $path (@$paths) {
+                     if ($path->key eq $p){
+                        my $tid = $path->targetNumber;
+                        if (!defined($luninfo{$tid})) {
+                           my @lunsPerTarget = ();
+                           $luninfo{$tid} = \@lunsPerTarget;
+                        }
+                        my $arr = $luninfo{$tid};
+                        push(@$arr, $path);
+                        $target{$tid} = $targetName;
+                     }
+                  }
+               }
+            } else {
+               print "No lun configured.\n";
+            }
+         }
+      }
+      # output
+      while (my ($tid, $luninfo) = each(%luninfo)) {
+         if (!defined($target_id) || $target_id == $tid) {
+            my $targetName = $target{$tid};
+            # bug 361450
+            if (!defined $targetName) {
+                $targetName = "";
+            }
+
+            print "Target: $targetName:\n";
+            print "-------------------------------------------\n";
+            foreach my $path (@$luninfo) {
+               my $devName;
+               my $device = $path->device;
+               # bug 505168
+               if (defined($device)) {
+                  @tokens = split('-', $device);
+                  $devName = $tokens[-1];
+               }
+               my $busId = $path->channelNumber;
+               my $lunid = $path->lunNumber;
+               my $tid = $path->targetNumber;
+               # bug 422663
+               my $size = "undefined";
+               if (defined $devName) {
+                  $size = getLunSize($scsiLuns, $devName);
+                  # bug 422663
+                  $devName = getCanonicalName($scsiLuns, $devName);
+               } else {
+                  $devName = "";
+               }
+               printLunInfo($devName, $busId, $tid, $lunid, $size);
+            }
+         } 
+      }
+   } else {
+      $usage_error = 1;  
+   }
+}
+
+sub getCanonicalName {
+   my ($luns, $devName) = @_;
+   my $canonicalName = "";
+   foreach my $lun (@$luns) {      
+      if ($lun->uuid eq $devName) {
+         $canonicalName = $lun->canonicalName;
+      } 
+   }
+   return $canonicalName;
+}
+
+sub getLunSize {
+   my ($luns, $devName) = @_;
+   my $size = 0;
+   my $capa;
+   foreach my $lun (@$luns) {      
+      if ($lun->canonicalName eq $devName) {
+         $capa = $lun->capacity;
+         if ($capa) {
+            $size = $capa->block * $capa->blockSize / 1024 / 1024;
+         }
+         return $size;
+      } else {
+         # bug 316221 - extra look up based on key
+         my @tokens = split('-', $lun->key);
+         if ($tokens[2] eq $devName) {
+            $capa = $lun->capacity;
+            if ($capa) {
+               $size = $capa->block * $capa->blockSize / 1024 / 1024;
+            }
+            return $size;
+         }
+      }
+   }
+   return $size;
+}
+
+sub printLunInfo {
+   my ($devName, $busID, $tarID, $lunID, $size) = @_;
+   print "OS DEVICE NAME    : " . $devName . "\n";
+   print "BUS NUMBER        : " . $busID . "\n";
+   print "TARGET ID         : " . $tarID . "\n";
+   print "LUN ID            : " . $lunID . "\n";
+   print "LUN SIZE          : " . $size  . " MB\n";
+   print "\n-------------------------------------------\n\n";
+}
+
+sub pnp_op {
+   if ($hba->isSoftwareBased) {
+      VIExt::fail("Error: Unsupported feature for this adapter.");
+   }
+   my $ipc = $hba->ipCapabilities;
+   my $ipp = $hba->ipProperties;
+   if ($list) {
+      print "MAC ADDRESS SETTABLE                    : \n";
+      print "MAX TRANSFER RATE (Mbps)                : " .
+                                     getValue($hba->maxSpeedMb) . "\n";
+      print "CURRENT TRANSFER RATE (Mbps)            : " .
+                                     getValue($hba->currentSpeedMb) . "\n";
+      print "MAX FRAME SIZE                          : " .
+                                     getValue($ipp->mtu) . "\n";
+      print "MAC ADDRESS                             : " .
+                                     getValue($ipp->mac) . "\n";
+   } elsif ($mtu) {
+      if ($mtu ne '1500' && $mtu ne '9000') {
+         VIExt::fail("MTU size 1500 or 9000 is allowed.");
+      }
+      my $p = setIPProp("mtu", $mtu, "mtuSettable");
+      updateIPProp($p);
+   } else {
+      $usage_error = 1;
+   }
+}
+
+sub iscsiname_op {
+   if ($list) {
+      my $settable = '';
+      print "iSCSI Node Name   : " . getValue($hba->iScsiName) . "\n";
+      print "iSCSI Node Alias  : " . getValue($hba->iScsiAlias) . "\n";
+   } elsif ($name || $alias) {
+      eval {
+         if ($name) {
+            $ss->UpdateInternetScsiName(iScsiHbaDevice => $adapter,
+                                             iScsiName => $name);
+         } else {
+            $ss->UpdateInternetScsiAlias(iScsiHbaDevice => $adapter,
+                                             iScsiAlias => $alias);
+         }
+      };
+      if ($@) {
+         VIExt::fail("Set adapter properties failed : " . $@->fault_string);
+      } else {
+         print "Set adapter properties succeeded.\n";
+      }
+   } else {
+      $usage_error = 1;
+   }
+}
+
+sub parameter_op {
+   if ($ip) {
+      my @addrs = split(":", $ip);
+      my $addr = $addrs[0];
+      my $port = $addrs[1] || $PORT;
+      if ($name) { # for static target
+         my $staticTargets = $hba->configuredStaticTarget;
+         if ($staticTargets) {
+            foreach my $staticTarget (@$staticTargets) {
+               if ($staticTarget->address eq $addr &&
+                   $staticTarget->port eq $port &&
+                   $staticTarget->iScsiName eq $name) {
+                  if ($list) {
+                     getIScsiParams($detail, $staticTarget);
+                     getDigestParams($detail, $staticTarget);
+                  } elsif ($param || $reset) {
+                     if (($param && $param !~ /digest/i) || 
+                         ($reset && $reset !~ /digest/i)) {
+                        setIScsiParam($param, $reset, $staticTarget);
+                     } else {
+                        setDigestParam($param, $reset, $staticTarget);
+                     }
+                  } else {
+                     $usage_error = 1;
+                  }
+               }
+            }
+         }
+      } else {  # for discovery address
+         my $sendTargets = $hba->configuredSendTarget;
+         if ($sendTargets) {
+            foreach my $sendTarget (@$sendTargets) {
+               if ($sendTarget->address eq $addr && 
+                   $sendTarget->port eq $port) {
+                  if ($list) {
+                     getIScsiParams($detail, $sendTarget);
+                     getDigestParams($detail, $sendTarget);
+                  } elsif ($param || $reset) {
+                     if (($param && $param !~ /digest/i) || 
+                         ($reset && $reset !~ /digest/i)) {
+                        setIScsiParam($param, $reset, $sendTarget);
+                     } else {
+                        setDigestParam($param, $reset, $sendTarget);
+                     }
+                  } else {
+                     $usage_error = 1;
+                  }
+               }
+            }
+         }
+      }
+   } else {  # for adapter
+      if ($list) {
+         getIScsiParams($detail);
+         getDigestParams($detail);
+      } elsif ($param || $reset) {
+         if (($param && $param !~ /digest/i) ||
+             ($reset && $reset !~ /digest/i)) {
+            setIScsiParam ($param, $reset);
+         } else {
+            setDigestParam ($param, $reset);
+         }
+      } else {
+         $usage_error = 1;
+      }
+   }
+}
+
+sub getIScsiParams {
+   my ($detail, $target) = @_;
+   my $sptOpts = undef;
+   my $opts = undef;
+   my $curValue = undef;
+   my $value = undef;
+
+   if (!$target) {   # adapter level
+      $sptOpts = $hba->supportedAdvancedOptions;
+      $opts = $hba->advancedOptions;
+   } else {          # target level
+      $sptOpts = $target->supportedAdvancedOptions;
+      $opts = $target->advancedOptions;
+   }
+
+   # get supported parameter option names
+   if ($sptOpts && $opts) {
+      print "\niSCSI Parameters Setting:\n\n";
+      foreach my $sptOpt (@$sptOpts) {
+         printf '%-35s', "- $sptOpt->{'key'}";
+         if ($detail) { 
+            print "\n";
+         }
+         my $found = 0;
+         foreach my $opt (@$opts) {
+            if ($sptOpt->{'key'} eq $opt->{'key'}) {
+               $found = $found || 1;
+               if ($detail) {
+                  printf '%-35s', "      Current";
+               }
+               # print current value
+               $curValue = getValue($opt->{'value'});
+               if ($sptOpt->{'key'} =~ /InitR2T|ImmediateData/i) {
+                  $curValue = $curValue? 'ON' : 'OFF';
+               }
+               print ": $curValue\n";
+               # print details of the parameter  
+               if ($detail) {
+                  my $ot = $sptOpt->{'optionType'};
+                  foreach my $key (sort keys %$ot) {
+                     if ($key !~ /dynamic/) {
+                        $value = getValue($ot->{$key});
+                        if ($key =~ /ValueIsReadonly/i) {
+                           $value = ($value)? 'NO' : 'YES';
+                        } elsif ($key =~ /Supported/i) {
+                           $value = ($value)? 'TRUE' : 'FALSE'; 
+                        } elsif ($key =~ /defaultValue/ && 
+                            $sptOpt->{'key'} =~ /InitR2T|ImmediateData/i) {
+                           $value = ($value)? 'ON' : 'OFF';
+                        }
+                        $key =~ s/ValueIsReadonly/Settable/i;
+                        printf '%-35s', "      " . ucfirst($key);
+                        print ": " . $value . "\n";
+                     }
+                  }
+                  printf '%-35s', "      Summary";
+                  print ": " . getValue($sptOpt->{'summary'}) . "\n";
+                  print "--------------------------------------------------\n";
+               }
+               last;
+            }
+         }
+         if (!$found) {
+            print "Adapter $adapter is not an iSCSI adapter.\n";
+         }
+      }
+   }
+}
+
+sub getDigestParams {
+   my ($detail, $target) = @_;
+   my $dcapas = $hba->digestCapabilities;
+   my $dprops = undef;
+
+   if (!$target) { # adapter level
+      $dprops = $hba->digestProperties;
+   } else {        # target level
+      $dprops = $target->digestProperties;
+   }
+
+   if ($dcapas) {
+      if ($detail) {  # print settable properties
+         if (!$target) {
+            # adapter level settings will be printed only at adapter level
+            printf '%-35s', "- dataDigestSettable";        
+            print ": " . getValue($dcapas->dataDigestSettable) . "\n";
+            printf '%-35s', "- headerDigestSettable";
+            print ": " . getValue($dcapas->headerDigestSettable) . "\n";
+         }
+         # target level setting will be printed at adapter and target level
+         printf '%-35s', "- targetDataDigestSettable";
+         print ": " . getValue($dcapas->targetDataDigestSettable) . "\n";
+         printf '%-35s', "- targetHeaderDigestSettable";
+         print ": " . getValue($dcapas->targetHeaderDigestSettable) . "\n";
+      }
+   }
+
+   if ($dprops) {
+      printf '%-35s', "- dataDigestType";
+      print ": " . getValue($dprops->dataDigestType) . "\n";
+      printf '%-35s', "- headerDigestType";
+      print ": " . getValue($dprops->headerDigestType) . "\n";
+   }
+}
+
+sub setIScsiParam {
+   my ($param, $reset, $target) = @_;
+
+   my $opt = new HostInternetScsiHbaParamValue();
+   my $sptOpts = undef;
+   my $paramName = undef;
+   my $paramValue = undef;
+   my $valueType = undef;
+
+   # get supported advanced iSCSI parameters
+   if (!$target) {   # adapter level
+      $sptOpts = $hba->supportedAdvancedOptions;
+   } else {          # target level
+      $sptOpts = $target->supportedAdvancedOptions;
+   }
+
+   if ($param) {   # for setting a parameter option, option --set
+      if ($param !~ /=/) {
+         VIExt::fail("Setting iSCSI parameter needs to specify value to be " . 
+                     "set."); 
+      }
+      my @p = split("=", $param);
+      $paramName = $p[0];
+      $paramValue = $p[1];
+      $valueType = getParamValueType($paramName);
+      $opt->{value} = new PrimType($paramValue, $valueType);
+   } elsif ($reset) { # for resetting a parameter option, option --reset
+      if ($reset =~ /=/) {
+         print "Warning: resetting ignores the value specified, but resets " .
+               "the value it should be.\n";
+         my @p = split("=", $reset);
+         $paramName = $p[0];
+      } else {
+         $paramName = $reset;
+      }
+
+      if (!defined $target) {
+         VIExt::fail("Only resetting target level inheritance is supported.");
+      }
+      # for target level, get current value
+      my $advOpts = $target->advancedOptions;
+      foreach my $advOpt (@$advOpts) {
+         if ($advOpt->key eq $paramName) {
+            $valueType = getParamValueType($paramName);
+            $paramValue = $advOpt->value;
+            $opt->{value} = new PrimType($paramValue, $valueType);
+            last;
+         }
+      }
+   }
+
+   if(!checkParamSettable($sptOpts, $paramName)) {
+      VIExt::fail("Parameter $paramName is not settable.");
+   }
+
+   $opt->{key} = $paramName;
+
+   print "Setting iSCSI parameter ...\n";
+   if (!$target) {   # adapter level
+      eval {
+            $ss->UpdateInternetScsiAdvancedOptions(
+                             iScsiHbaDevice => $adapter,
+                             options => ($opt));
+      };
+   } else {          # target level
+      if ($param) {
+         # turn off inheritance to set target level parameter 
+         $opt->{isInherited} = 0;
+      } elsif ($reset) {
+         # set back to be inherited from adapter level setting
+         $opt->{isInherited} = 1;
+      }
+
+      # construct targetSet
+      my $targetSet = new HostInternetScsiHbaTargetSet();
+      my @targets = ($target);
+      if ($target->isa('HostInternetScsiHbaStaticTarget')) {
+         $targetSet->{staticTargets} = \@targets;
+      } elsif ($target->isa('HostInternetScsiHbaSendTarget')) {
+         $targetSet->{sendTargets} = \@targets;
+      } else {
+         VIExt::fail("Unknown target data type!");
+      }
+
+      eval {
+         $ss->UpdateInternetScsiAdvancedOptions(
+                          iScsiHbaDevice => $adapter,
+                          targetSet => $targetSet,
+                          options => ($opt));
+      };
+   }
+   if ($@) {
+      VIExt::fail("Setting iSCSI parameter failed : " . $@->fault_string);
+      return 1;
+   } else {
+      print "Setting iSCSI parameter suceeded.\n";
+   }
+}
+
+sub setDigestParam {
+   my ($param, $reset, $target) = @_;
+   my $dcapas = $hba->digestCapabilities;
+   my $dprop = new HostInternetScsiHbaDigestProperties();
+
+   my @params = ();
+   my $type = undef;
+   my $value = undef;
+   if ($param) {
+      if ($param !~ /=/) {
+         VIExt::fail("Setting digest parameter needs to specify value."); 
+      } else {
+         @params = split("=", $param);
+         $type = $params[0];
+         $value = $params[1];
+         checkDigestValue($value);
+      }
+   } elsif ($reset) {
+      if (!$target) {
+         VIExt::fail("Only resetting target level inheritance is supported.");
+      } elsif ($reset =~ /=/) {
+         print "Warning: resetting digest parameter ignore specified value.\n";
+         @params = split("=", $reset);
+         $type = $params[0];
+      } else {
+         $type = $reset;
+      }
+   }
+   checkDigestType($type);
+
+   print "Setting digest parameter ...\n";
+   if (!$target) {   # adapter level (setting)
+      if ($type eq 'dataDigestType') {
+         if ($dcapas->dataDigestSettable) {
+            print "Setting dataDigestType = $value ... \n";
+            $dprop->{'dataDigestType'} = $value;
+         } else {
+            VIExt::fail("dataDigestSettable is " .
+               getValue($dcapas->dataDigestSettable));
+         }
+      } elsif ($type eq 'headerDigestType') {
+         if ($dcapas->headerDigestSettable) {
+            print "Setting headerDigestType ... \n";
+            $dprop->{'headerDigestType'} = $value;
+         } else {
+            VIExt::fail("headerDigestSettable is " .
+               getValue($dcapas->headerDigestSettable));
+         }
+      }
+      eval {
+         $ss->UpdateInternetScsiDigestProperties(
+                                   iScsiHbaDevice => $adapter,
+                                   digestProperties => $dprop);
+      };
+      if ($@) {
+         VIExt::fail("Operation setting digest parameter failed : " . $@->fault_string);
+      } else {
+         print "Operation setting digest parameter succeeded.";
+      }
+   } else { # target level
+      $dprop->{isInherited} = $reset;
+      my $targetSet = new HostInternetScsiHbaTargetSet();
+      my @targets = ($target);
+      if ($target->isa('HostInternetScsiHbaStaticTarget')) {
+         $targetSet->{staticTargets} = \@targets;
+      } elsif ($target->isa('HostInternetScsiHbaSendTarget')) {
+         $targetSet->{sendTargets} = \@targets;
+      } else {
+         VIExt::fail("Unknown target data type!");
+      }
+
+      if ($type eq 'dataDigestType') {
+         if ($param) {
+            if ($dcapas->targetDataDigestSettable) {
+               print "Setting target dataDigestType ... \n";
+               $dprop->{dataDigestInherited} = 0;
+               $dprop->{dataDigestType} = $value;
+            } else {
+               VIExt::fail("targetDataDigestSettable is " .
+                 getValue($dcapas->targetDataDigestSettable));
+            }
+         } elsif ($reset) {
+            if ($dcapas->targetDataDigestSettable) {
+               print "Resetting target dataDigestType ... \n";
+               $dprop->{dataDigestInherited} = 1;
+               $dprop->{dataDigestType} = 
+                  $target->digestProperties->dataDigestType;
+            } else {
+               VIExt::fail("targetDataDigestSettable is " .
+                  getValue($dcapas->targetDataDigestSettable));
+            }
+         }
+      } elsif ($type eq 'headerDigestType') {
+         if ($param) {
+            if ($dcapas->targetHeaderDigestSettable) {
+               print "Setting target headerDigestType ... \n";
+               $dprop->{headerDigestInherited} = 0;
+               $dprop->{headerDigestType} = $value;
+            } else {
+               VIExt::fail("targetHeaderDigestSettable is " .
+                  getValue($dcapas->targetHeaderDigestSettable));
+            }
+         } elsif ($reset) {
+            if ($dcapas->targetHeaderDigestSettable) {
+               print "Resetting target headerDigestType ... \n";
+               $dprop->{headerDigestInherited} = 1;
+               $dprop->{headerDigestType} = 
+                  $target->digestProperties->headerDigestType;
+            } else {
+               VIExt::fail("targetHeaderDigestSettable is " .
+                  getValue($dcapas->targetHeaderDigestSettable));
+            }
+         }
+      }
+      eval {
+         $ss->UpdateInternetScsiDigestProperties(
+                                    iScsiHbaDevice => $adapter,
+                                    targetSet => $targetSet,
+                                    digestProperties => $dprop);
+      };
+      if ($@) {
+         VIExt::fail("Setting digest parameter failed : " . $@->fault_string);
+         return 1;
+      } else {
+         print "Successfully set digest parameter.\n";
+      }
+   }
+}
+
+sub checkParamSettable {
+   my ($sptOpts, $paramName) = @_;
+   foreach my $sptOpt (@$sptOpts) {
+      if ($sptOpt->key eq $paramName) {
+         if (defined $sptOpt->optionType->valueIsReadonly) {
+            return !($sptOpt->optionType->valueIsReadonly);
+         } else {
+            print "Parameter $paramName settable is unset.\n";
+            return 0;
+         }
+      }
+   }
+   VIExt::fail("Parameter $paramName is not supported.");
+}
+
+sub getParamValueType {   # get data type of the parameter value to be set
+   my ($paramName) = @_;
+   my $valueType = 'int';     # default to 'int'
+   if ($paramName eq 'FirstBurstLength' ||
+       $paramName eq 'MaxBurstLength' ||
+       $paramName eq 'MaxRecvDataSegLen'){
+      $valueType = 'long';
+   } elsif ($paramName eq 'InitR2T' || $paramName eq 'ImmediateData' ||
+            $paramName eq 'DelayedAck') {
+      $valueType = 'boolean';
+   }
+   return $valueType;
+}
+
+sub checkDigestType {
+   my ($type) = @_;
+   if ($type ne "dataDigestType" && $type ne "headerDigestType") {
+      VIExt::fail("Digest parameter has to be 'dataDigestType' or " .
+          "'headerDigestType'");
+   }
+}
+
+sub checkChapLevel {
+   my ($value) = @_;
+   if ($value ne "chapProhibited" &&
+       $value ne "chapDiscouraged" &&
+       $value ne "chapPreferred" &&
+       $value ne "chapRequired") {
+      VIExt::fail("value=$value, CHAP or mutual CHAP level has to be one of the " . 
+          "following: 'chapProhibited', 'chapDiscouraged', " . 
+          "'chapPreferred', 'chapRequired'");
+   }
+}
+
+sub checkDigestValue {
+   my ($value) = @_;
+   if ($value ne "digestProhibited" &&
+       $value ne "digestDiscouraged" &&
+       $value ne "digestPreferred" &&
+       $value ne "digestRequired") {
+      VIExt::fail("value=$value, Digest parameter setting has to be one of the " . 
+          "following: 'digestProhibited', 'digestDiscouraged', " . 
+          "'digestPreferred', 'digestRequired'");
+   }
+}
+
+sub getValue {
+   my ($val) = @_;
+   $val = (defined $val) ? $val : 'Unset';
+   $val = ($val eq 'true')? 1 : $val;
+   $val = ($val eq 'false')? 0 : $val;
+   return $val;
+}
+
+sub swiscsi_op {
+   my $option = undef;
+
+   if ($list) {
+      if ($ss->storageDeviceInfo->softwareInternetScsiEnabled) {
+         print "Software iSCSI is enabled.\n";
+      } else {
+         print "Software iSCSI is not enabled.\n";
+      }
+   } else {
+      if ($enable) {
+         if ($ss->storageDeviceInfo->softwareInternetScsiEnabled) {
+            VIExt::fail("Software iSCSI has already been enabled.");
+         } else {
+            print "Enabling software iSCSI...\n";
+            $option = 1;
+         }
+      } elsif ($disable) {
+         print "Disabling software iSCSI for next boot...\n";
+         $option = 0;
+      }
+      eval {
+         $ss->UpdateSoftwareInternetScsiEnabled(enabled => $option);
+      };
+      if ($@) {
+         VIExt::fail("Operation Failed : " . $@->fault_string);
+      } else {
+         print "Operation Successful.\n";
+      }
+   }
+}
+
+sub adapter_op {
+   if ($list) {
+      foreach my $h (@$hbas) {
+         if ($h->isa('HostInternetScsiHba')) {
+            print $h->device . "          " . $h->model . "\n";
+         }
+      }
+   } else {
+      $usage_error = 1;
+   }
+}
+
+sub getPassword {
+   my ($opt_name) = @_;
+
+   if($opt_name) {
+      print "Enter " . $opt_name . ": ";
+      if ( $^O eq "MSWin32" ) {
+         require Term::ReadKey;
+         Term::ReadKey->import(qw(ReadMode));
+         Term::ReadKey->import(qw(ReadLine));
+         ReadMode('noecho');
+         chomp(my $password = ReadLine(0));
+         ReadMode('normal');
+         print "\n";
+         return $password;
+      }
+      else {
+         system("stty -echo") and die "ERROR: stty failed\n";
+         chomp (my $password = <STDIN>);
+         system("stty echo") and die "ERROR: stty failed\n";
+         print "\n";
+         return $password;
+      }
+   }
+   return undef;
+}
+
+
+__END__
+
+=head1 NAME
+
+vicfg-iscsi - manage iSCSI storage.
+
+=head1 SYNOPSIS
+
+ vicfg-iscsi [<connection_options>] [option] [suboption] [parameter] [<adapter_name>]
+
+Option is one of 
+ C<--discovery>, C<--static>,C<--authentication>, C<--phba>, 
+ C<--target>, C<--lun>, C<--network> (Hardware iSCSI only),
+ C<--pnp> (Hardware iSCSI only), C<--iscsiname>, 
+ C<--parameter>, C<--swiscsi>, C<--adapter>.
+
+Suboption is one of  
+ C<--list>,  C<--add>, C<--remove>.
+
+Parameters differ depend on the suboption used. 
+
+<adapter_name> is required unless you specify the C<--help>, C<--swiscsi>, or
+C<--adapter> option.
+
+=head1 DESCRIPTION
+
+vicfg-iscsi supports configuration and property retrieval for software or hardware iSCSI
+initiators. See the I<vSphere Command-Line Interface Installation and Scripting Guide> for more information. 
+
+
+=head1 OPTIONS
+
+=over
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-iscsi --help>
+for a list of all connection options.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--discovery --list>
+
+Returns a list of discovery addresses and static targets and related properties if 
+configured.
+
+=item B<--discovery --add --ip E<lt>ip_addr | domain_nameE<gt>
+ [:E<lt>port_numE<gt>]>
+
+Adds a discovery address, by using <ip_addr> or <domain_name> 
+and optional <port_num>, if <port_num> is not specified, uses 3260 as default.
+
+=item B<--discovery --remove --ip E<lt>ip_addr | domain_nameE<gt>
+[:E<lt>port_numE<gt>]>
+
+Removes a discovery address, by using <ip_addr> or <domain_name> 
+and optional <port_num>, if <port_num> is not specified, uses 3260 as default.
+
+=item B<--static --list>
+
+Returns a list of static discovery target(s) and related properties.
+
+=item B<--static --add --ip E<lt>ip_addr | domain_nameE<gt>
+[:E<lt>port_numE<gt>] --name E<lt>iscsi_nameE<gt>>
+
+Adds a static discovery target by using <ip_addr> or <domain_name>
+and optionally <port_num>. If <port_num> is not specified, uses 3260 as the default. The   
+the target iscsi name must be in IQN or EUI format.
+
+=item B<--static --remove --ip E<lt>ip_addr | domain_nameE<gt>
+[:E<lt>port_numE<gt>] --name E<lt>iscsi_nameE<gt>>
+
+Removes a static discovery target by using <ip_addr> or 
+<domain_name> and optionally <port_num>. If <port_num> is not specified, uses 3260 
+as the default. The target iscsi name must be in IQN or EUI format.
+
+=item B<--authentication --list>
+
+Lists authentication method settings.
+If CHAP and / or MCHAP passwords are not specified on command line, script will prompt for both passwords.
+
+If only CHAP is set:
+
+=item B<--authentication --level E<lt>levelE<gt> --method E<lt>auth_methodE<gt>
+--chap_username E<lt>usernameE<gt> --chap_password E<lt>passwordE<gt>E<gt> 
+[--ip E<lt>ip_addr | domain_nameE<gt>[:E<lt>port_numE<gt>]
+[--name E<lt>iscsi_nameE<gt>]]>
+
+If both CHAP and MCHAP are set:
+
+=item B<--authentication --level E<lt>levelE<gt> --method E<lt>auth_methodE<gt>
+--chap_username E<lt>usernameE<gt> --chap_password E<lt>passwordE<gt>E<gt> -b 
+--mchap_username E<lt>usernameE<gt> --mchap_password E<lt>passwordE<gt>E<gt> 
+[--ip E<lt>ip_addr | domain_nameE<gt>[:E<lt>port_numE<gt>]
+[--name E<lt>iscsi_nameE<gt>]]>
+
+Sets iSCSI authentication properties. Sets level, authentication
+username and password. Supported <auth_method> is CHAP.
+
+Level is one of [chapRequired | chapPreferred | chapDiscouraged | chapProhibited].
+
+If C<--ip> and C<--name> are specified, authentication is set for per-target CHAP.  If only C<--ip> is
+specified, authentication is set for per discovery address CHAP.  If neither C<--ip> nor C<--name>
+is specified, authentication is set for per adapter CHAP.
+
+=item B<--authentication --reset_auth --method E<lt>auth_methodE<gt>
+--ip E<lt>ip_addr | domain_nameE<gt>[:E<lt>port_numE<gt>]
+[--name E<lt>iscsi_nameE<gt>]>
+
+Resets target-level CHAP authentication properties to be inherited
+from the adapter level.  Resetting adapter-level properties is not supported.
+
+=item B<--authentication --level E<lt>levelE<gt> --method E<lt>auth_methodE<gt>
+--chap_username E<lt>usernameE<gt> --chap_password E<lt>passwordE<gt>
+--mutual --mchap_username E<lt>usernameE<gt> --mchap_password E<lt>passwordE<gt>
+[--ip E<lt>ip_addr | domain_nameE<gt>[:E<lt>port_numE<gt>]
+[--name E<lt>iscsi_nameE<gt>]]>
+
+Sets iSCSI authentication properties (level, authentication
+username and password) Specify CHAP as the value of  <auth_method>.
+Specify C<--mutual> to indicate mutual CHAP.  
+
+Level is [chapRequired | chapPreferred |
+chapDiscouraged | chapProhibited] for simple CHAP and [chapRequired | chapProhibited] for mutual CHAP.
+
+If C<--ip> and C<--name> are specified, authentication is set for per-target mutual CHAP.  If only C<--ip> is specified, 
+authentication is set for per discovery address mutual CHAP.  If neither C<--ip> nor C<--name> is specified, 
+authentication is set for per-adapter mutual CHAP.
+
+=item B<--authentication --reset_auth --method E<lt>auth_methodE<gt> --mutual
+--ip E<lt>ip_addr | domain_nameE<gt>[:E<lt>port_numE<gt>]
+[--name E<lt>iscsi_nameE<gt>]>
+
+Resets target-level mutual CHAP authentication properties to be
+inherited from adapter level.  Resetting adapter-level properties is not
+supported.
+
+=item B<--phba --list>
+
+Lists PHBA properties.
+
+=item B<--target --list>
+
+Lists all target properties.
+
+=item B<--lun --list>
+
+Lists LUN properties, including device name, bus number, LUN id, and
+size.
+
+=item B<--lun --list --target_id E<lt>target_idE<gt>>
+
+Lists LUN properties for the specified <target_id>.  Run C<vicfg-iscsi --lun --list> to 
+view the target ID.  
+
+=item B<--network --list>
+
+Lists network properties, including IP, subnet mask, default
+gateway, etc.
+
+=item B<--network --ip E<lt>ip_addrE<gt>>
+
+Sets the HBA IPv4 address to <ip_addr>.
+
+=item B<--network --subnetmask E<lt>subnet_maskE<gt>>
+
+Sets the HBA network mask to <subnet_mask>.
+
+=item B<--network --gateway E<lt>default_gatewayE<gt>>
+
+Sets the HBA gateway to <default_gateway>.
+
+=item B<--network --set ARP=true|false>
+
+Enables or disables ARP redirect.
+
+=item B<--pnp --list>
+
+Lists physical network portal properties, including mac address info,
+max and current transfer rate, and MTU size.
+
+=item B<--pnp --mtu E<lt>mtu_sizeE<gt>>
+
+Sets MTU size to <mtu_size>.
+
+=item B<--iscsiname --list>
+
+Lists iSCSI initiator node properties, including iSCSI name and alias
+name.
+
+=item B<--iscsiname --name E<lt>iscsi_nameE<gt>>
+
+Sets the iSCSI initiator node name to <iscsi_name> in IQN or EUI format.
+
+=item B<--iscsiname --alias E<lt>alias_nameE<gt>>
+
+Sets the iSCSI initiator node alias to <alias_name>.
+
+=item B<--parameter --list [--detail] [--ip E<lt>ip_addr E<verbar>
+domain_nameE<gt> [:E<lt>port_numE<gt>][--name E<lt>iscsi_nameE<gt>]]>
+
+Lists iSCSI parameters and their current value.  If C<--ip> and C<--name>
+are specified, the list is for per target parameters.  If only C<--ip> is specified,
+the list is for per discovery address parameters.  If neither C<--ip> nor C<--name> are
+specified, the list is for adapter parameters.  Specifying C<--detail> lists detailed properties of iSCSI parameters. 
+
+=item B<--parameter --set E<lt>nameE<gt>=E<lt>valueE<gt> [--ip E<lt>ip_addr 
+| domain_nameE<gt>[:E<lt>port_numE<gt>] [--name E<lt>iscsi_nameE<gt>]]>
+
+Sets the specified iSCSI parameter to the specified value if the
+parameter is settable.  If C<--ip> and C<--name> are specified, sets per
+target parameters.  If only C<--ip> is specified, sets per discovery address
+parameters.  If neither C<--ip> nor C<--name> is specified, sets adapter
+parameters.  Run C<--parameter --list --detail> for information on whether a parameter
+is settable or not. The following parameters are supported. See the I<vSphere 
+Command-Line Interface Installation and Scription Guide> for more information. 
+
+ dataDigestType
+ HeaderDigest
+ MaxOutstandingR2T
+ FirstBurstLength
+ MaxBurstLength
+ MaxRecvDataSegLen
+ NoopInterval
+ NoopTimeout
+ RecoveryTimeout
+ DelayedAck
+
+=item B<--parameter --reset E<lt>nameE<gt> --ip E<lt>ip_addr | 
+domain_nameE<gt>[:E<lt>port_numE<gt>] [--name E<lt>iscsi_nameE<gt>]]>
+
+Resets target-level iSCSI parameters to be inherited from the adapter
+level.  Either C<--ip> or C<--ip> and C<--name> are required to specify a target.  Resetting
+adapter-level parameters is not supported.
+
+=item B<--swiscsi --list>
+
+Lists software iSCSI information (enabled or not enabled).
+
+=item B<--swiscsi --enable>
+
+Enables software iSCSI.
+
+=item B<--swiscsi --disable>
+
+Disables software iSCSI.
+
+=item B<--adapter --list>
+
+Lists iSCSI adapter(s).
+
+=item B<--vihost | -h>
+
+When you execute a vSphere CLI with the C<--server> option pointing 
+to a vCenter Server system, you can use C<--vihost> to specify the ESX/ESXi 
+host to run the command against.
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-iscsi --help> for a list of common options including connection options.
+
+
+List discovery addresses and static targets (if configured) and related
+properties:
+
+   vicfg-iscsi <conn_options>
+   --discovery --list <adapter_name>
+
+Add a discovery address:
+
+   vicfg-iscsi <conn_options>
+   --discovery --add --ip <ip_addr | domain_name> <adapter_name>
+
+Remove a discovery address
+
+   vicfg-iscsi <conn_options>
+   --discovery --remove --ip <ip_addr | domain_name> <adapter_name>
+
+List static discovery targets and related properties:
+
+   vicfg-iscsi <conn_options>
+   --static --list <adapter_name>
+
+Add a static discovery target:
+
+   vicfg-iscsi <conn_options>
+   --static --add --ip <ip_addr | domain_name> --name <iscsi_name> <adapter_name>
+
+Remove a static discovery target:
+
+   vicfg-iscsi <conn_options>
+   --static --remove --ip <ip_addr | domain_name> --name <iscsi_name>
+   <adapter_name>
+
+List authentication method settings:
+
+   vicfg-iscsi <conn_options>
+   --authentication --list <adapter_name>
+
+List adapter level mutual CHAP setting:
+
+   vicfg-iscsi <conn_options>
+   --authentication --list -m CHAP -b <adapter_name>
+
+List send target level CHAP setting:
+
+   vicfg-iscsi <conn_options>
+   --authentication --list -m CHAP --ip <ip address> <adapter_name>
+
+List static target level CHAP setting:
+
+   vicfg-iscsi <conn_options>
+   --authentication --list -m CHAP --ip <ip address> --name <iqn name> <adapter_name>
+
+Set authentication properties:
+
+   vicfg-iscsi <conn_options>
+   --authentication --method <auth_method> --level <level> --chap_username 
+   <username> --chap_password <password> [--ip <ip_addr | domain_name> 
+   [--name <iscsi_name>] <adapter_name>
+
+Note that both chap and mchap password must be specified if using both auth methods.
+
+   vicfg-iscsi <conn_options>
+   --authentication --method <auth_method> --level <level> --chap_username 
+   <username> --chap_password <password> --mutual --mchap_username 
+   <username> --mchap_password <password> [--ip <ip_addr | domain_name> 
+   [--name <iscsi_name>] <adapter_name>
+
+Reset target level CHAP authentication properties to be inherited from
+adapter level:
+
+   vicfg-iscsi <conn_options>
+   --authentication --method <auth_method> --reset_auth --ip <ip_addr |
+   domain_name> [--name <iscsi_name>] <adapter_name>
+
+List PHBA properties:
+
+   vicfg-iscsi <conn_options>
+   --phba --list <adapter_name>
+
+List active targets properties:
+
+   vicfg-iscsi <conn_options>
+   --target --list <adapter_name>
+
+List LUNs properties:
+
+   vicfg-iscsi <conn_options>
+   --lun --list <adapter_name>
+
+List LUNs properties for target_id 0:
+
+   vicfg-iscsi <conn_options>
+   --lun --list --target_id 0 <adapter_name>
+
+List network properties:
+
+   vicfg-iscsi <conn_options>
+   --network --list <adapter_name>
+
+Set HBA IPv4 address:
+
+   vicfg-iscsi <conn_options>
+   --network --ip <ip_addr> <adapter_name>
+
+Set HBA network mask:
+
+   vicfg-iscsi <conn_options>
+   --network --subnetmask <subnet_mask> <adapter_name>
+
+Set HBA gateway:
+
+   vicfg-iscsi <conn_options>
+   --network --gateway <default_gateway> <adapter_name>
+
+Set HBA IPv4 address and network mask and gateway:
+
+   vicfg-iscsi <conn_options>
+   --network --ip <ip_addr> --subnetmask <subnet_mask>
+   --gateway <default_gateway> <adapter_name>
+
+Enable or disable ARP redirect:
+
+   vicfg-iscsi <conn_options>
+   --network --set ARP=true|false <adapter_name>
+
+List PNP properties:
+
+   vicfg-iscsi <conn_options>
+   --pnp --list <adapter_name>
+
+Set MTU size:
+
+   vicfg-iscsi <conn_options>
+   --pnp --mtu <mtu_size> <adapter_name>
+
+List iSCSI initiator node properties:
+
+   vicfg-iscsi <conn_options>
+   --iscsiname --list <adapter_name>
+
+Set iSCSI node iqn name:
+
+   vicfg-iscsi <conn_options>
+   --iscsiname --name <iscsi_name> <adapter_name>
+
+Set iSCSI node alias:
+
+   vicfg-iscsi <conn_options>
+   --iscsiname --alias <alias_name> <adapter_name>
+
+List iSCSI parameters:
+
+   vicfg-iscsi <conn_options>
+   --parameter --list <adapter_name>
+
+List iSCSI parameters with details:
+
+   vicfg-iscsi <conn_options>
+   --parameter --list --detail <adapter_name>
+
+List iSCSI parameters with details at target level:
+
+   vicfg-iscsi <conn_options>
+   --parameter --list --detail --ip <ip_addr | domain_name> <adapter_name>
+
+Set adapter level iSCSI parameter:
+
+   vicfg-iscsi <conn_options>
+   --parameter --set <name>=<value> <adapter_name>
+
+Set target level iSCSI parameter:
+
+   vicfg-iscsi <conn_options>
+   --parameter --set <name>=<value> --ip <ip_addr | domain_name> <adapter_name>
+
+Reset target level iSCSI parameter to be inherited from the adapter level:
+
+   vicfg-iscsi <conn_options>
+   --parameter --reset <name> --ip <ip_addr | domain_name> <adapter_name>
+
+List software iSCSI enabled or not enabled:
+
+   vicfg-iscsi <conn_options>
+   --swiscsi --list
+
+Enable software iSCSI:
+
+   vicfg-iscsi <conn_options>
+   --swiscsi --enable
+
+Disable software iSCSI:
+
+   vicfg-iscsi <conn_options>
+   --swiscsi --disable
+
+List iSCSI adapter:
+
+   vicfg-iscsi <conn_options> 
+   --adapter --list
+
+=cut
+

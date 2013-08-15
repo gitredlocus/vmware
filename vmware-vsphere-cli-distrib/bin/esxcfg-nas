@@ -1,0 +1,292 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+#
+# vicfg-nas - VMware ESX Server NAS configuration tool
+#
+# SYNOPSIS
+#      vicfg-nas OPTIONS
+# 
+# DESCRIPTION
+#      vicfg-nas provides an interface to manipulate NAS file systems on an ESX
+#      Server.
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => "The host to use when connecting via a vCenter Server",
+      required => 0,
+   },
+   list => {
+      alias => "l",
+      type => "",
+      help => "List the currently mounted NAS file systems",
+      required => 0,
+   },
+   add => {
+      alias => "a",
+      type => "",
+      help => "Add a new NAS filesystem to /vmfs/volumes.  Requires --nasserver and --share options.",
+      required => 0,
+   },
+   # XXX argname originally 'host', which interferes with predefined.
+   # Fortunately this goes away when we switch use of prefined --host to --server 
+   nasserver => {
+      alias => "o",
+      type => "=s",
+      help => "The host name or ip address for a NAS mount (IPv6 address valid for vSphere 4.0 and later)",
+      required => 0,
+   },
+   share => {
+      alias => "s",
+      type => "=s",
+      help => "The name of the NAS share on the remote system (IPv6 address valid for vSphere 4.0 and later)",
+      required => 0,
+   },
+   delete => {
+      alias => "d",
+      type => "",
+      help => "Unmount and delete a filesystem",
+      required => 0,
+   },
+   readonly => {
+      alias => "y",
+      type => "",
+      help => "Add the new NAS filesystem with readonly access",
+      required => 0,
+   },   
+   _default_ => {
+      type => "=s",
+      argval => "label",
+      help => "The label for the NAS datastore",
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $label = Opts::get_option('_default_');
+my $share = Opts::get_option('share');
+my $host = Opts::get_option('nasserver');
+my $add = Opts::get_option('add');
+my $delete = Opts::get_option('delete');
+my $list = Opts::get_option('list');
+my $readonlymode = Opts::get_option('readonly');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['configManager.datastoreSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+my $datastore_system = 
+   Vim::get_view (mo_ref => $host_view->{'configManager.datastoreSystem'});
+
+
+#
+# cycle through various operations
+#
+if (defined $list) {
+   list_nas($datastore_system);
+} elsif (defined $delete) {
+   unless (defined($label)) {
+      print "Must specify label for delete.\n";
+      Opts::usage();
+      exit 1;
+   }
+   delete_nas($datastore_system, $label);
+} elsif (defined $add) {
+   unless (defined($label) && defined($host) && defined($share)) {
+      print "Must specify label, host and share for add.\n";
+      Opts::usage();
+      exit 1;
+   }
+   add_nas($datastore_system, $host, $share, $label);
+} else {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+# bug 310576
+sub list_nas {
+   my ($dssys) = @_;
+   my $datastores = $dssys->datastore;
+   my $nasinfos = "";
+   my $flag = 0;
+
+   foreach my $dsRef (@$datastores) {
+      my $ds = Vim::get_view (mo_ref => $dsRef);
+      if ($ds->info->isa("NasDatastoreInfo")) {
+         $flag = 1;
+         $nasinfos .= sprintf("%s is %s from %s %s\n",
+                              $ds->info->name,
+                              $ds->info->nas->remotePath,
+                              $ds->info->nas->remoteHost,
+                              $ds->summary->accessible ? "mounted" : "not mounted");
+      }
+   }
+   if($flag) {
+      print $nasinfos;
+   }
+   else {
+      print "No NAS datastore found\n";
+   }
+}
+
+sub add_nas {
+   my ($dssys, $host, $share, $label) = @_;
+   my $datastores = $dssys->datastore;
+   my $accessMode = "readWrite";
+   
+   if (defined $readonlymode) {
+      $accessMode = "readOnly";
+   }
+   
+   my $hostNasVolSpec = new HostNasVolumeSpec (remoteHost => $host, 
+                                               remotePath => $share, 
+                                               localPath => $label,
+                                               accessMode => $accessMode); 
+
+   eval { $dssys->CreateNasDatastore(spec => $hostNasVolSpec); };
+   if ($@) {
+      VIExt::fail("Unable to create datastore: " . ($@->fault_string));
+   }
+
+   printf("Connecting to NAS volume: %s\n%s created and connected.\n", $label, $label);
+}
+
+sub delete_nas {
+   my ($dssys, $label) = @_;
+   my $datastores = $dssys->datastore;
+
+   foreach my $dsRef (@$datastores) {
+      my $ds = Vim::get_view (mo_ref => $dsRef);
+      if ($ds->info->isa("NasDatastoreInfo") && $ds->info->name eq $label) {
+         # bug 310576
+         eval { $dssys->RemoveDatastore(datastore => $dsRef); };
+         if ($@) {
+            VIExt::fail("Unable to remove datastore: " . ($@->fault_string));
+         }
+         print "NAS volume $label deleted.\n";
+         return;
+      }
+   }
+
+   VIExt::fail("Error performing operation: Unknown filesystem, cannot remove.");
+}
+
+__END__
+
+=head1 NAME
+
+vicfg-nas - manipulate NAS file systems on an ESX/ESXi host. 
+
+=head1 SYNOPSIS
+
+ vicfg-nas [<conn_options>]
+     [--add --nasserver <server_name> --share <share_name> |
+      --delete <share_name> |
+      --help |
+      --list |
+      --nasserver <server_name> |
+      --readonly |
+      --vihost <esx_host ]
+
+=head1 DESCRIPTION
+
+The vicfg-nas command manipulates NAS file systems associated with ESX/ESXi hosts.
+For more information on working with NAS file systems, see 
+the I<ESX Configuration Guide> and the I<ESXi Configuration Guide>.
+
+=head1 OPTIONS
+
+=over
+
+
+=item B<--add | -a>
+
+Adds a new NAS file system to /vmfs/volumes on the ESX/ESXi host. The command adds 
+an entry to the known NAS file system list, but does not mount the file system. 
+When you use this option, you must also use the C<--nasserver|-o> and C<--share|-s>  options, 
+and must specify a label name for the new file system.
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-nas --help>
+for a list of all connection options.
+
+=item B<--delete | -d E<lt>share_nameE<gt>>
+
+Deletes a NAS file system. 
+This command unmounts the NAS file system and removes it from the list of known file systems.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with --help has the same effect.
+
+=item B<--list | -l>
+
+Optional. Lists all known NAS file systems with their mount name, 
+share name, and host name and indicates for each file system whether it is mounted.
+
+=item B<--nasserver | -o E<lt>server_nameE<gt>>
+
+Used in conjunction with the C<--add|-a> option to supply the host
+name for a new NAS file system.
+
+=item B<--share | -s E<lt>share_nameE<gt>>
+
+Used in conjunction with the C<--add|-a> option to supply the share
+name of a new NAS file system.
+
+=item B<--readonly | -y>
+
+Adds the new NAS filesystem with readonly access.
+
+=item B<--vihost | -h>
+
+When you run a vCLI command with the C<--server> 
+option pointing to a vCenter Server system, use C<--vihost> to specify the ESX/ESXi host to run the command against. 
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-nas --help> for a list of common options including connection options. 
+
+List all known NAS file systems with their mount name, share  name, 
+and hostname and indicate whether each is mounted:
+
+ vicfg-nas <conn_options> -l
+
+Add a new NAS file system to the ESX Server. This will add an entry 
+to the known NAS file system list. You must supply the host name and the share
+name for the new NAS file system:
+
+ vicfg-nas <conn_options> -a -o <nasserver> -s /home FileServerHome
+
+Add a new readonly NAS file system to the ESX Server. This will add an entry 
+to the known NAS file system list. You must supply the host name and the share
+name for the new NAS file system:
+
+ vicfg-nas <conn_options> -a -y -o <nasserver> -s /home FileServerHome
+
+Delete a NAS file system.  The command unmounts the NAS file system 
+and removes it from the list of known file systems:
+
+ vicfg-nas <conn_options> -d FileServerHome
+
+

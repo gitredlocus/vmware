@@ -1,0 +1,332 @@
+#!/usr/bin/perl -w -I/opt/esxtools/lib
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+# 
+# vicfg-nics - VMware ESX Server Physical NIC information
+#
+# SYNOPSIS
+#      vicfg-nics
+# 
+# DESCRIPTION
+#      vicfg-nics provides information about the Physical NICs in use by the
+#      VMkernel.  This will print the VMkernel name for the NIC, its PCI ID,
+#      Driver, Link state, Speed, Duplex, MAC address, and a shore PCI 
+#      description of the card.  It also allows users to set speed and duplex 
+#      settings for a specific NIC.
+
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!
+             The host to use when connecting via a vCenter Server.
+      !,
+      required => 0,
+   },
+   'speed' => {
+      alias => 's',
+      type => "=i",
+      help => qq!
+             <speed>
+             Set the speed at which a given card should run. It must be one of
+             10, 100, 1000, or 10000.
+      !,
+      required => 0,
+   },
+
+   'duplex' => {
+      alias => 'd',
+      type => "=s",
+      help => qq!
+             <duplex>
+             Set the duplex value which a given card should run.
+      !,
+      required => 0,
+   },
+
+   'auto' => {
+      alias => 'a',
+      type => "",
+      help => qq!
+             Set the given NIC to auto-negotiate its speed and duplex settings.
+      !,
+      required => 0,
+   },
+
+   'list' => {
+      alias => 'l',
+      type => "",
+      help => qq!
+             List the NICs in the system and, lists for each NIC, the PCI bus,
+             driver, speed, duplex information, MAC address and a description.  
+             It also shows whether the link is up.
+      !,
+      required => 0,
+   },
+
+   '_default_' => {
+      type => "=s",
+      help => qq!
+             The name of the physical nic.
+      !,
+      required => 0,
+   },
+);
+
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $nic = Opts::get_option('_default_');
+my $auto = Opts::get_option('auto');
+my $duplex = Opts::get_option('duplex');
+my $speed = Opts::get_option('speed');
+my $list = Opts::get_option('list');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['hardware', 'configManager.networkSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+unless (defined($host_view->{'configManager.networkSystem'})) {
+   VIExt::fail("Error: network system not found.\n");
+}
+
+my $network_system = 
+   Vim::get_view (mo_ref => $host_view->{'configManager.networkSystem'});
+
+if (defined($list)) {
+   Opts::assert_usage( 
+      !(defined($speed) || defined($duplex) || defined($nic) || defined($auto)),
+      "list does not take any other arguments"
+   );
+   list($network_system);
+} elsif (defined($auto)) {
+   Opts::assert_usage(defined($nic), "You must specify a physical nic.");
+   Opts::assert_usage(!(defined($speed) || defined($duplex)),
+      "auto does not take require speed or duplex arguments."
+   );
+   config($network_system, $nic, undef);
+   print "Updated the $nic to auto settings.\n";
+} elsif (defined($speed) && defined($duplex)) {
+   Opts::assert_usage(defined($nic), "You must specify a physical nic.");
+
+   Opts::assert_usage(scalar($speed =~ /^\s*10{1,4}\s*$/), "Invalid speed parameter given.");
+   if(($duplex eq "half" || $duplex eq "full")) {
+      my $pnic_link_info = new PhysicalNicLinkInfo(speedMb => $speed, 
+                                                   duplex => ($duplex =~ /full/i) ? 1 : 0);
+      config($network_system, $nic, $pnic_link_info);
+      print "Updated the $nic to speed $speed and $duplex mode.\n";
+   }
+   else {
+      print "Invalid duplex parmeter given.\n";
+   }
+} else {
+   Opts::assert_usage(
+      !((defined($speed) && !defined($duplex)) || (!defined($speed) && defined($duplex))),
+      "You must specify both speed and duplex to force settings."
+   );
+
+   Opts::usage();
+   exit 1;
+}
+          
+
+Util::disconnect();
+
+sub find_pci_device {
+   my ($pci_id) = @_;
+
+   my $pci_devices = $host_view->hardware->pciDevice;
+   foreach my $pci_dev (@$pci_devices) {
+      if (defined($pci_dev->{id}) && $pci_dev->{id} eq $pci_id) {
+         return $pci_dev;
+      }
+   }
+}
+
+sub list {
+   my ($netsys) = @_;
+
+   my $pnics = $netsys->networkInfo->pnic;
+   # defect 216270 & 195141
+   my $version = Vim::query_server_version(Opts::get_option('url'));
+   if($version == 2) {
+      printf("%-7s %-7s %-10s %-4s %-8s %-6s %-45s\n", 
+             "Name", "PCI", "Driver", "Link", "Speed", "Duplex", "Description");
+   }
+   else {
+      printf("%-7s %-7s %-10s %-4s %-8s %-6s %-18s %-6s %-45s\n", 
+             "Name", "PCI", "Driver", "Link", "Speed", "Duplex", "MAC Address", 
+             "MTU", "Description");
+   }
+
+   foreach my $pnic (@$pnics) {
+      my ($state, $speed, $duplex);
+      my $ls = $pnic->linkSpeed;
+      my $mtu_val = "";
+      my $pci_device = find_pci_device($pnic->pci);
+
+      if (defined($ls)) {
+         $state = "Up";
+         $speed = $ls->speedMb . "Mbps"; 
+         $duplex = $ls->duplex ? "Full" : "Half";
+      } else {
+         $state = "Down";
+         $speed = "0Mbps";
+         $duplex = "Half";
+         $mtu_val = "1500";
+      } 
+      # defect 216270 & 195141
+      my $description = "";
+      eval {
+         $description = $pci_device->vendorName . " " . $pci_device->deviceName;
+      };
+      
+      if($version == 2) {
+         printf("%-7s %-7s %-10s %-4s %-8s %-6s %-45s \n", 
+                $pnic->device, $pnic->pci, $pnic->driver, $state, $speed, $duplex, $description);
+      }
+      else {
+         # defect 266287
+         my $vswtch = $netsys->networkInfo->vswitch;
+         my $flag = 0;
+         foreach my $vsw (@$vswtch) {
+            my $ps = $vsw->pnic;
+            foreach my $p (@$ps) {
+               my $var = "key-vim.host.PhysicalNic-".$pnic->device;
+               if ($p eq $var) {
+                  if (defined $vsw->mtu) {
+                     $mtu_val = $vsw->mtu;
+                     $flag = 1;
+                  }
+               }
+               if ($flag) {last};
+            }
+            if ($flag) {last};
+         }
+         printf("%-7s %-7s %-10s %-4s %-8s %-6s %-18s %-6s %-45s \n", 
+                $pnic->device, $pnic->pci, $pnic->driver, $state, $speed, $duplex, $pnic->mac,
+                $mtu_val, $description);
+      }
+   }
+}
+
+
+sub config {
+   my ($netsys, $nic, $pnic_info) = @_;
+
+   if (defined($pnic_info)) {
+      eval { 
+         $netsys->UpdatePhysicalNicLinkSpeed(device => $nic, linkSpeed => $pnic_info); 
+      };
+   } else {
+      eval { 
+         $netsys->UpdatePhysicalNicLinkSpeed(device => $nic);
+      };
+   }
+   if ($@) {
+      VIExt::fail("Unable to update nic: " . ($@->fault_string));
+   }
+}
+
+__END__
+
+=head1 NAME
+
+vicfg-nics - get information, set speed and duplex for ESX/ESXi physical NICs
+
+=head1 SYNOPSIS
+
+ vicfg-nics [<connection_options>] 
+    --auto <nic> |
+    --duplex [full|half] <nic>
+    --help |
+    --list |
+    --speed [10 | 100 | 1000 | 10000] <nic> |
+    --vihost <esx_host>]
+
+=head1 DESCRIPTION
+
+The vicfg-nics command manages uplink adapters, that is, 
+the Ethernet switches used by an ESX/ESXi host. 
+You can use vicfg-nics to list the VMkernel name for the uplink adapter, its PCI ID, driver, 
+link state, speed, duplex setting, MAC address and a short PCI description
+of the card. You can also specify speed and duplex settings for 
+an uplink adapter.
+
+=head1 OPTIONS
+
+=over
+
+=item B<--auto | -a E<lt>nicE<gt>>
+
+Sets the NIC to auto-negotiate its speed and duplex settings
+Requires a NIC parameter.
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-nics --help>
+for a list of all connection options.
+
+=item B<--duplex | -d [full|half] E<lt>nicE<gt>>
+
+Sets the duplex value at which a given network adapter should run to either 
+full (transmit data in both directions at the same time) 
+or half (transmit data in one direction at a time). Requires a NIC parameter.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--list | -l>
+
+Lists the NICs in the system and, for each NIC, the PCI bus,
+driver, speed, duplex information, MAC address, and a description.  Also shows whether 
+the link is up.
+
+=item B<--speed | -s E<lt>speedE<gt> E<lt>nicE<gt>>
+
+Sets the speed at which a given network adapter should run. 
+Valid values for <speed> are 10, 100, 1000, or 10000. Requires a NIC parameter.
+
+=item B<--vihost | -h>
+
+When you run a vCLI command with the C<--server> option pointing to a vCenter Server 
+system, use C<--vihost> to specify the ESX/ESXi host to run the command against. 
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-nics --help> for a list of common options including connection options. 
+
+List the NICs in the system and print their current and configured speed and duplex settings:
+
+ vicfg-nics <conn_options> -l
+
+Set vmknic02 to auto-negotiate its speed and duplex settings: 
+
+ vicfg-nics <conn_options> -a vmnic02
+
+Set the duplex setting for vmnic0 to full and the speed to 100:
+
+ vicfg-nics <conn_options> -d full -s 100 vmnic0
+
+=cut
+
+
+
+

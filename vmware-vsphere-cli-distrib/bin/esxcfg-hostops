@@ -1,0 +1,518 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!  "The host to use when connecting via a vCenter Server."  !,
+      required => 0,
+   },
+   operation => {
+      alias => "o",
+      type => "=s",
+      help => qq!  "Operation to perform (enter | exit | reboot | shutdown | info)."  !,
+      required => 1,
+   },
+   action => {
+      alias => "a",
+      type => "=s",
+      help => qq!  "Specify the action for powered on virtual machine (poweroff | suspend). Default is suspend."  !,
+      required => 0,
+   },
+   cluster => {
+      alias => "c",
+      type => "=s",
+      help => qq!  "Name of the cluster (optional)."  !,
+      required => 0,
+   },
+   datacenter => {
+      alias => "d",
+      type => "=s",
+      help => qq!  "Name of the datacenter (optional)."  !,
+      required => 0,
+   },
+   force => {
+      alias => "f",
+      type => "",
+      help => qq!  "Optional for reboot and shutdown operation. Flag to force the host that is not in maintenance mode
+         to be rebooted/shutdown.  If not specified, operation will fail for host not in maintenance mode."  !,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate(\&validate);
+
+my $vihost = Opts::get_option('vihost');
+my $operation = Opts::get_option('operation');
+my $action = Opts::get_option('action');
+my $cluster = Opts::get_option('cluster');
+my $datacenter = Opts::get_option('datacenter');
+my $force = Opts::get_option('force');
+
+Util::connect();
+
+my $sc = Vim::get_service_content();
+my $apiType = $sc->about->apiType;
+
+my $exit_code = 0;
+
+if ($apiType eq 'HostAgent') {
+   my $host_view = VIExt::get_host_view(1, ['name']);
+   Opts::assert_usage(defined($host_view), "Invalid host.");
+   my $host_mor = $host_view->{mo_ref};
+   if ($operation eq 'enter') {
+      enter_maintenance_mode($host_mor);
+   }
+   elsif ($operation eq 'exit') {
+      exit_maintenance_mode($host_mor);
+   }
+   elsif ($operation eq 'reboot') {
+      reboot_host($host_mor);
+   }
+   elsif ($operation eq 'shutdown') {
+      shutdown_host($host_mor);
+   }
+   elsif ($operation eq 'info') {
+      host_info($host_mor);
+   }
+}
+elsif ($apiType eq 'VirtualCenter') {
+   if (defined $vihost) {
+      my $host_view = VIExt::get_host_view(1, ['name']);
+      Opts::assert_usage(defined($host_view), "Invalid host.");
+      my $host_mor = $host_view->{mo_ref};
+      if ($operation eq 'enter') {
+         enter_maintenance_mode($host_mor);
+      }
+      elsif ($operation eq 'exit') {
+         exit_maintenance_mode($host_mor);
+      }
+      elsif ($operation eq 'reboot') {
+         reboot_host($host_mor);
+      }
+      elsif ($operation eq 'shutdown') {
+         shutdown_host($host_mor);
+      }
+      elsif ($operation eq 'info') {
+         host_info($host_mor);
+      }
+   }
+   else {
+      my $begin_entity = $sc->rootFolder;
+      if (defined $datacenter) {
+         my $dc_views = Vim::find_entity_views (view_type => 'Datacenter',
+                                                filter => {name => $datacenter});
+         unless (@$dc_views) {
+            VIExt::fail("Datacenter <$datacenter> is not found.");
+         }
+         if ($#{$dc_views} != 0) {
+            VIExt::fail("Datacenter <$datacenter> is not unique.");
+         }
+         $begin_entity = shift (@$dc_views);
+         $begin_entity = $begin_entity->{mo_ref};
+      }
+      if (defined $cluster) {
+         my $cluster_views = Vim::find_entity_views (view_type => 'ClusterComputeResource',
+                                                     begin_entity => $begin_entity,
+                                                     filter => {name => $cluster});
+         unless (@$cluster_views) {
+            VIExt::fail("Cluster <$cluster> is not found.");
+         }
+         if ($#{$cluster_views} != 0) {
+            VIExt::fail("Cluster <$cluster> is not unique.");
+         }
+         $begin_entity = shift (@$cluster_views);
+         $begin_entity = $begin_entity->{mo_ref};
+      }
+      my $host_mors = HostOps::get_host_mor(begin_entity => $begin_entity);
+      foreach(@$host_mors) {
+         if ($operation eq 'enter') {
+            enter_maintenance_mode($_);
+         }
+         elsif ($operation eq 'exit') {
+            exit_maintenance_mode($_);
+         }
+         elsif ($operation eq 'reboot') {
+            reboot_host($_);
+         }
+         elsif ($operation eq 'shutdown') {
+            shutdown_host($_);
+         }
+         elsif ($operation eq 'info') {
+            host_info($_);
+         }
+      }
+   }
+}
+
+Util::disconnect();
+
+exit($exit_code);
+
+sub enter_maintenance_mode {
+   my ($host_mor) = @_;
+   my $vmaction = 'suspend';
+   
+   if (defined $action) {
+      $vmaction = $action;
+   }
+   
+   my $host_view = Vim::get_view(mo_ref => $host_mor, properties => ['name']);
+   eval {
+      my $resp = HostOps::enter_maintenance_mode(host_mor => $host_mor,
+                                                 action => $vmaction);
+      print "Host " . $host_view->name . 
+            " entered into maintenance mode successfully.\n";
+   };
+   if ($@) {
+      if (ref($@) eq 'SoapFault') {
+         if (ref($@->detail) eq 'InvalidState') {
+            Util::trace(0, "For the host " . $host_view->name . 
+                           " : The enter maintenance mode operation".
+                           " is not allowed in the current state.\n");
+         }
+         elsif (ref($@->detail) eq 'Timedout') {
+            Util::trace(0, "For the host " . $host_view->name . 
+                           " : Operation is timed out.\n");
+         }
+         elsif (ref($@->detail) eq 'HostNotConnected') {
+            Util::trace(0, "For the host " . $host_view->name . 
+                           " : Unable to communicate with the" .
+                           " remote host, since it is disconnected.\n");
+         }
+         else {
+            Util::trace(0, "Host " . $host_view->name . 
+                           " cannot enter into maintenance mode.\n" . $@ . "\n");
+         }
+         $exit_code = 1;
+      }
+      else {
+         Util::trace(0, "Host " . $host_view->name. 
+                        " cannot enter into maintenance mode.\n" . $@ . "\n");
+         $exit_code = 1;
+      }
+   }
+}
+
+sub exit_maintenance_mode {
+   my ($host_mor) = @_;
+   my $host_view = Vim::get_view(mo_ref => $host_mor, properties => ['name']);
+   eval {
+      HostOps::exit_maintenance_mode(host_mor => $host_mor);
+      print "Host " . $host_view->name . " exited from maintenance mode successfully.\n";
+   };
+   if ($@) {
+      if (ref($@) eq 'SoapFault') {
+         if (ref($@->detail) eq 'InvalidState') {
+            Util::trace(0, "For the host " . $host_view->name .
+                           " : The operation is not allowed in the current state.\n");
+         }
+         else {
+            Util::trace(0, "Host " . $host_view->name .
+                           " cannot exit maintenance mode.\n" . $@ . "\n");
+         }
+         $exit_code = 1;
+      }
+      else {
+         Util::trace(0, "Host " . $host_view->name .
+                        " cannot exit maintenance mode.\n" . $@ . "\n");
+         $exit_code = 1;
+      }
+   }
+}
+
+sub reboot_host {
+   my ($host_mor) = @_;
+   my $force_flag = 0;
+   
+   if (defined $force) {
+      $force_flag = 1;
+   }
+   
+   my $host_view = Vim::get_view(mo_ref => $host_mor, properties => ['name']);
+   eval {
+      HostOps::reboot_host(host_mor => $host_mor,
+                           force => $force_flag);
+      print "Host " . $host_view->name . " rebooted successfully.\n";
+   };
+   if ($@) {
+      if (ref($@) eq 'SoapFault') {
+         if (ref($@->detail) eq 'InvalidState') {
+            Util::trace(0, "For the host " . $host_view->name .
+                           " : The operation is not allowed in the current state.\n");
+         }
+         elsif (ref($@->detail) eq 'HostNotConnected') {
+            Util::trace(0, "For the host " . $host_view->name .
+                           " : Unable to communicate with the remote host, since it is disconnected.\n");
+         } else {
+            Util::trace(0, "Host " . $host_view->name .
+                           " cannot be rebooted.\n" . $@ . "\n");
+         }
+         $exit_code = 1;
+      }
+      else {
+         Util::trace(0, "Host " . $host_view->name .
+                        " cannot be rebooted.\n" . $@ . "\n");
+         $exit_code = 1;
+      }
+   }
+}
+
+sub shutdown_host {
+   my ($host_mor) = @_;
+   my $force_flag = 0;
+   
+   if (defined $force) {
+      $force_flag = 1;
+   }
+   
+   my $host_view = Vim::get_view(mo_ref => $host_mor, properties => ['name']);
+   eval {
+      HostOps::shutdown_host(host_mor => $host_mor,
+                             force => $force_flag);
+      print "Host " . $host_view->name . " shutdown successfully.\n";
+   };
+   if ($@) {
+      if (ref($@) eq 'SoapFault') {
+         if (ref($@->detail) eq 'InvalidState') {
+            Util::trace(0, "For the host " . $host_view->name . 
+                           " : The operation is not allowed in the current state.\n");
+         } else {
+            Util::trace(0, "Host " . $host_view->name . 
+                           " cannot be shutdown\n" . $@ . "\n");
+         }
+         $exit_code = 1;
+      }
+      else {
+         Util::trace(0, "Host " . $host_view->name . 
+                        " cannot be shutdown\n" . $@ . "\n");
+         $exit_code = 1;
+      }
+   }
+}
+
+sub host_info {
+   my ($host_mor) = @_;
+   my $host_view = HostOps::get_host_info(host_mor => $host_mor, properties => ['name', 'runtime.bootTime',
+                                                                                'summary.hardware.vendor',
+                                                                                'summary.hardware.model',
+                                                                                'summary.hardware.cpuModel',
+                                                                                'summary.hardware.cpuMhz',
+                                                                                'runtime.inMaintenanceMode',
+                                                                                'runtime.connectionState',
+                                                                                'summary.hardware.numCpuCores',
+                                                                                'summary.hardware.memorySize',
+                                                                                'summary.config.vmotionEnabled']);
+   print "\nHost Name            : " . $host_view->name;
+   
+   if ($host_view->{'runtime.connectionState'}->val eq 'connected') {   
+      print "\nManufacturer         : " . $host_view->{'summary.hardware.vendor'} . "\n";
+      print "Model                : " . $host_view->{'summary.hardware.model'} . "\n";
+      print "Processor Type       : " . $host_view->{'summary.hardware.cpuModel'} . "\n";
+      print "CPU Cores            : " . $host_view->{'summary.hardware.numCpuCores'} . " CPUs x " . $host_view->{'summary.hardware.cpuMhz'} . " GHz\n";
+      print "Memory Capacity      : " . ($host_view->{'summary.hardware.memorySize'} / 1024 / 1024) . " MB\n";
+      print "VMotion Enabled      : " . ($host_view->{'summary.config.vmotionEnabled'} eq 'true' ? 'yes' : 'no') . "\n";
+      print "In Maintenance Mode  : " . ($host_view->{'runtime.inMaintenanceMode'} eq 'true' ? 'yes' : 'no') . "\n";
+      if (defined $host_view->{'runtime.bootTime'}) {
+         print "Last Boot Time       : " . $host_view->{'runtime.bootTime'} . "\n";
+      }
+   } else {
+      print " (disconnected)\n";
+   }
+   print "\n";
+}
+
+sub validate {
+   my $valid = 1;
+   my $operation = Opts::get_option('operation');
+   my $action = Opts::get_option('action');
+
+   if (!defined $operation) {
+      VIExt::fail("Operation is a mandatory argument.");
+      $valid = 0;
+   }
+   elsif ($operation ne 'enter' && $operation ne 'exit' 
+          && $operation ne 'reboot' && $operation ne 'shutdown' && $operation ne 'info') {
+      VIExt::fail("Invalid value for argument operation. Operation must be either " .
+                  "enter, exit, reboot, shutdown or info.");
+      $valid = 0;
+   }
+   if (defined $action) {
+      if ($action ne 'poweroff' && $action ne 'suspend') {
+         VIExt::fail("Invalid value for argument action. action must be either " .
+                     "poweroff or suspend.");
+         $valid = 0;
+      }
+   }
+
+   return $valid;
+}
+
+__END__
+
+
+=head1 NAME
+
+vicfg-hostops - perform host-related operations.
+
+=head1 SYNOPSIS
+
+ vicfg-hostops [<conn_options>]
+       [--action [suspend|poweroff] |
+        --cluster |
+        --datacenter |
+        --force |
+        --operation [enter | exit | shutdown | reboot | info] ]
+
+
+=head1 DESCRIPTION
+
+vicfg-hostops provides an interface for performing operations on ESX/ESXi hosts. 
+
+=over
+
+=item *
+
+enter maintenance mode
+
+=item *
+
+exit maintenance mode
+
+=item *
+
+shutdown host
+
+=item *
+
+reboot host
+
+=back
+
+The command also displays host related information.
+
+=head1 OPTIONS
+
+=over
+
+=item B<--action | -a [suspend | poweroff]>
+
+Action to perform on powered on virtual machines (suspend | poweroff) when hosts enter maintenance mode or are rebooted. 
+Default is suspend.
+
+=item B<--cluster E<lt>cluster_nameE<gt> | -c E<lt>cluster_nameE<gt>>
+
+Specify this option to shut down all hosts in a cluster. 
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-hostops --help>
+for a list of all connection options.
+
+=item B<--datacenter E<lt>dc_nameE<gt> | -d E<lt>dc_nameE<gt>>
+
+Specify this option to shut down all hosts in a datacenter.
+
+=item B<--force | -f>
+
+Use C<--force> to force the shutdown of all hosts, even those that are not in maintenance mode. 
+If you do not specify C<--force>, only hosts that are in maintenance mode are shut down. 
+
+=item B<--help> 
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--operation | -o>
+
+Required. Operation to perform. Specify
+
+=over
+
+=item *
+
+C<enter> to enter maintenance mode.
+
+=item *
+
+C<exit> to exit maintenance mode.
+
+=item *
+
+C<shutdown> to shut down one or more hosts. By default, hosts must be in maintenance more. Use C<--force> to 
+override that default. 
+
+=item *
+
+C<reboot> to reboot one or more hosts. By default, hosts must be in maintenance more. Use C<--force> to 
+override that default. 
+
+=item *
+
+C<info> to display information about one or more hosts
+
+=back
+
+=item B<--vihost | -h>
+
+When you run a vSphere CLI command with the C<--server> 
+option pointing to a vCenter Server system, use C<--vihost> to specify the ESX/ESXi 
+host to run the command against. 
+
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-hostops --help> for a list of common options including connection options.
+
+Put the host into maintenance mode:
+
+ vicfg-hostops <connection_options> -o enter
+
+Instruct the host to exit maintenance mode:
+
+ vicfg-hostops <connection_options> -o exit
+
+Put the host in maintenance mode and power off all powered on virtual machines:
+
+ vicfg-hostops <connection_options> -o enter -a  poweroff
+
+Put all hosts in the specified datacenter in maintenance mode, and suspend virtual machines 
+that are powered on on those hosts:
+
+ vicfg-hostops --server <VC server name> --username <user name> 
+    --password <password> -o enter -d <datacenter name> 
+    -h <esx_host_name> -a suspend
+
+Shut down all hosts in a cluster. If the hosts are not in maintenance mode, power off all virtual 
+machines and put the hosts into maintenance mode:
+
+ vicfg-hostops --server <VC server name> --username <user name> 
+    --password <password> -o shutdown  
+    -c <cluster_name> -h <esx_host_name> --force 
+
+Reboot the host(s) in the datacenter that belong to the specified cluster. If
+hosts are not in maintenance mode, wait until they are:
+
+ vicfg-hostops --server <VC_server-name> --username <user name> 
+    --password <password> --operation reboot -d <datacenter_name> 
+    -c <cluster_name> --vihost <esx_host_name> -f 
+
+Display information about a specified host:
+
+ vicfg-hostops --server <esx_host> --username <user name> 
+    --password <password> --operation info

@@ -1,0 +1,606 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+# 
+# SYNOPSIS
+#      vicfg-mpath  OPTIONS
+# 
+# DESCRIPTION
+#      vicfg-mpath configures multipath settings for Fibre Channel or iSCSI
+#      LUNs.
+# 
+# 
+# EXAMPLES
+#  To see all paths :
+#      vicfg-mpath -l
+#
+#  To see all paths, with more details :
+#      vicfg-mpath -l -d
+# 
+#  To see paths for disk vml.123456 :
+#      vicfg-mpath -q --lun vml.123456
+# 
+#  To set policy for disk vmhba0:0:1 to mru :
+#      vicfg-mpath --policy mru --lun=vmhba0:0:1
+#
+#  To set preferred path for disk vmhba0:0:1 ;
+#      vicfg-mpath --preferred --policy fixed --path=vmhba1:0:1 --lun=vmhba0:0:1
+# 
+#  To enable a path for disk vmhba0:0:1 :
+#      vicfg-mpath --path vmhba1:0:1 --lun vmhba0:0:1 --state=on
+
+
+use strict;
+use warnings;
+use bignum;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!
+             The host to use when connecting via a vCenter Server.
+      !,
+      required => 0,
+   },
+   'list' => {
+      alias => 'l',
+      type => "",
+      help => qq!
+             List all LUNs and the paths to these LUNs through adapters on the
+             system.  Each LUN will contain the type, internal name, console
+             name, size, paths, and the policy used for path selection.
+      !,
+      required => 0,
+   },
+   'policy' => {
+      alias => 'p',
+      type => "=s",
+      help => qq!
+             Set the policy for a given to one of "mru", "rr", or "fixed".
+             Most Recently Used (mru) selects the path most recently used to
+             send I/O to a device.  Round Robin (rr) will rotate through all
+             available paths.  Fixed (fixed) will use only the active path.
+             This parameter requires that the --lun parameter is also passed
+             to indicate one which LUN to operate.
+      !,
+      required => 0,
+   },
+   'state' => {
+      alias => 's',
+      type => "=s",
+      help => qq!
+             Set the state of a given LUN path to either "on" or "off".  This
+             flag requires both the --lun and --path flags to be set.
+      !,
+      required => 0,
+   },
+   'preferred' => {
+      alias => 'f',
+      type => "",
+      help => qq!
+             Set the given path to be considered "preferred" for a given LUN.
+             This flag requires both the --lun and --path flags to be set.
+      !,
+      required => 0,
+   },
+   'query' => {
+      alias => 'q',
+      type => "",
+      help => qq!
+             Query a specific LUN for its information and print it.  This flag
+             requires the --lun flag to be set.
+      !,
+      required => 0,
+   },
+   'path' => {
+      alias => 'P',
+      type => "=s",
+      help => qq!
+             Required to specify the path to use in operations.  This is a
+             required parameter for other options and does not itself indicate
+             an operation.
+      !,
+      required => 0,
+   },
+   'lun' => {
+      alias => 'L',
+      type => "=s",
+      help => qq!
+             Required to specify the LUN to use in operations.  This is a
+             required parameter for other options and does not itself indicate
+             an operation.
+      !,
+      required => 0,
+   },
+   'detailed' => {
+      alias => 'd',
+      type => "",
+      help => qq!
+             Show all information about a LUN and its paths including the vml
+             name of the LUN.
+      !,
+      required => 0,
+   },
+   'bulk' => {
+      alias => 'b',
+      type => "",
+      help => qq!
+             Show all LUNs and paths in a format easily parsed by scripts.
+      !,
+      required => 0,
+   },
+   'hbas' => {
+      alias => 'a',
+      type => "",
+      help => qq!
+             Print the list of HBAs that are identifiable by a unique ID.
+             This includes FibreChannel and iSCSI devices.  Parallel and Block
+             devices will not appear in this list.
+      !,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $list = Opts::get_option('list');
+my $query = Opts::get_option('query');
+my $state = Opts::get_option('state');
+my $preferred = Opts::get_option('preferred');
+my $policy = Opts::get_option('policy');
+my $hbas = Opts::get_option('hbas');
+my $bulk = Opts::get_option('bulk');
+
+my $lun = Opts::get_option('lun');
+my $path = Opts::get_option('path');
+my $verbose = Opts::get_option('detailed');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['config.product.version', 'configManager.storageSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+check_version();
+
+my $ss = 
+   Vim::get_view (mo_ref => $host_view->{'configManager.storageSystem'});
+
+if (defined $list) {
+   list($ss, undef);
+} elsif (defined $hbas) {
+   list_hbas($ss);
+} elsif (defined $bulk) {
+   bulk($ss);
+} elsif (defined $query) {
+   Opts::assert_usage(defined($lun), "Must specify a lun.\n");
+   list($ss, $lun);
+} elsif (defined $policy) {
+   Opts::assert_usage(defined($lun), "Must specify a lun.\n");
+   Opts::assert_usage(scalar(grep {$_ eq $policy} ("mru", "rr", "fixed")), 
+                      "The policy must be one of : mru, rr, fixed");
+   # defect 173651  
+   if ($policy eq "fixed") {
+      Opts::assert_usage(defined($path), 
+                         "Fixed policy requires a preferred path.");
+   }
+   set_policy($ss, $lun, $path, $preferred, $policy);
+} elsif (defined $preferred) {
+   Opts::assert_usage(defined($lun) && defined($path), "Must specify a lun and a path.\n");
+   set_policy($ss, $lun, $path, $preferred, undef);
+} elsif (defined $state) {
+   Opts::assert_usage(defined($lun), "Must specify a lun and a path.\n");
+   Opts::assert_usage(scalar(grep {$_ eq $state} ("on", "off")), 
+                      "The state must be one of : on, off.");
+   set_state($ss, $lun, $path, $state);
+} else {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+
+sub check_version {
+   my $host_version = $host_view->{'config.product.version'};
+   if ($host_version ne 'e.x.p' && $host_version !~ /^3.5/) {
+      print "ESX host version is $host_version. ";
+      print "This operation is supported on ESX 3.5, ESX 3i 3.5\n";
+      exit(1);
+   }
+}
+
+sub find_policy_for_lun {
+   my ($ss, $lunName) = @_;
+
+   return undef unless (defined($ss) && defined($lunName));
+
+   my $luns = $ss->storageDeviceInfo->scsiLun;
+   return undef unless defined($luns);
+
+   my $hbas = $ss->storageDeviceInfo->hostBusAdapter;
+   return undef unless defined($hbas);
+
+   my $mpLuns = $ss->storageDeviceInfo->multipathInfo->lun;
+   return undef unless defined($mpLuns);
+
+   foreach my $mpLun (@$mpLuns) {
+      my $paths = $mpLun->path;
+      my $numPaths = scalar(@$paths);
+      my $lun = find_by_key($luns, $mpLun->lun);
+
+      if (
+         (defined($lun->{canonicalName}) && ($lunName eq $lun->{canonicalName})) ||
+         (defined($lun->{uuid}) && ($lunName eq ("vml." . $lun->{uuid})))
+      ) {
+         return $mpLun->policy;
+      }
+   }
+
+   return undef;
+}
+
+sub find_by_key {
+   my ($list, $key) = @_;
+   
+   foreach my $item (@$list) {
+      if ($key eq $item->key) {
+         return $item;
+      }
+   }
+
+   return undef;
+}
+
+sub get_pci_string {
+   my $hba = shift;
+   my $pciString = defined($hba) ? $hba->pci : "";
+   # defect 173631
+   if ($pciString =~ /([a-fA-F0-9]+):([a-fA-F0-9]+)\.([a-fA-F0-9]+)$/) {
+      $pciString = hexstr_to_int($1) 
+                   . ":" . hexstr_to_int($2) 
+                   . "." . hexstr_to_int($3);
+   }
+   
+   return $pciString
+}
+
+sub hexstr_to_int {
+    my ($hexstr) = @_;
+    VIExt::fail("Invalid hex string: $hexstr")
+    if $hexstr !~ /^[0-9A-Fa-f]{1,8}$/;
+    my $num = hex($hexstr);
+    return $num >> 31 ? $num - 2 ** 32 : $num;
+}
+
+sub dec_to_hex {
+   my ($dec) = @_;
+   my $hex = '';
+   my $mod = '';
+   if ($dec < 0) {
+      $dec = $dec + 2**64; 
+   }
+   while ($dec != 0) {
+      $mod = $dec%16;
+      if ($mod > 9) {
+         $mod = sprintf("%x", $mod);
+      }
+      $hex = $mod . $hex;
+      $dec = $dec/16;
+      $dec =~ s/\.(\d)+//;
+      if ($dec < 16) {
+         if ($dec > 9) {
+            $dec = sprintf("%x", $dec);
+         }
+         $hex = $dec . $hex;
+         $dec = 0;
+      }
+   }
+   return $hex;
+}
+
+sub list_hbas {
+   my ($ss, $lunName) = @_;
+   my $hbas = $ss->storageDeviceInfo->hostBusAdapter;
+   foreach my $hba (@$hbas) {
+      if (defined($hba)) {
+         next if $hba->isa("HostBlockHba");
+         next if $hba->isa("HostParallelScsiHba");
+         my $pciString = get_pci_string($hba);
+         printf("%s %s%s\n",
+                $hba->device,
+                $hba->isa("HostFibreChannelHba") ? dec_to_hex($hba->portWorldWideName) . " " : "",
+                $pciString);
+      }
+   }
+}
+
+sub list {
+   my ($ss, $lunName) = @_;
+
+   my $luns = $ss->storageDeviceInfo->scsiLun;
+   my $hbas = $ss->storageDeviceInfo->hostBusAdapter;
+   my $mpLuns = $ss->storageDeviceInfo->multipathInfo->lun;
+   foreach my $mpLun (@$mpLuns) {
+      my $paths = $mpLun->path;
+      my $numPaths = scalar(@$paths);
+      my $lun = find_by_key($luns, $mpLun->lun);
+
+      if (defined($lunName)) {
+         unless (
+            (defined($lun->{canonicalName}) && ($lunName eq $lun->{canonicalName})) ||
+            (defined($lun->{uuid}) && ($lunName eq ("vml." . $lun->{uuid})))
+         ) {
+             next;
+         }
+      }
+
+      my $pol = $mpLun->policy;
+      my $polPrefer;
+      if (defined($pol) && defined($pol->{prefer})) {
+         $polPrefer = $pol->prefer;
+      }
+
+      my $cap = $lun->{capacity};
+      my $deviceUuidPath = defined($lun->{uuid}) ? ("vml." . $lun->uuid) : "";
+
+      printf("%s %s%s %s has %d paths and policy of %s\n",
+             defined($lun->{lunType}) ? $lun->lunType : "",
+             defined($lun->{canonicalName}) ? $lun->canonicalName : "",
+             $verbose ? " $deviceUuidPath" : "",
+             defined($cap) ? 
+                "(" . int($cap->block * $cap->blockSize / (1024*1024)) . "MB)" : "(0MB)",
+             $numPaths,
+             (defined($pol) && defined($pol->{policy})) ? $pol->policy : "");
+
+      foreach my $path (@$paths) {
+         my $hba = find_by_key($hbas, $path->adapter);
+         my $isFC = $hba->isa("HostFibreChannelHba");
+         my $state = ($path->{pathState} ? 
+                       (($path->pathState eq "active") ? "On active" : $path->pathState) :
+                       "");
+
+         my $pciString = get_pci_string($hba);
+         
+         printf(" %s %s %s %s %s %s\n",
+             $isFC ? "FC" : "Local",
+             $pciString,
+             $isFC ? dec_to_hex($hba->portWorldWideName) . "<->" . 
+                     dec_to_hex($path->transport->portWorldWideName) : "",
+             $path->name,
+             $state,
+             (defined($polPrefer) && ($path->name eq $polPrefer)) ? "preferred" : "");
+      }
+      print "\n";
+   }
+}
+
+sub bulk {
+   my ($ss) = @_;
+
+   my $luns = $ss->storageDeviceInfo->scsiLun;
+   my $hbas = $ss->storageDeviceInfo->hostBusAdapter;
+   my $mpLuns = $ss->storageDeviceInfo->multipathInfo->lun;
+   foreach my $mpLun (@$mpLuns) {
+      my $paths = $mpLun->path;
+      my $numPaths = scalar(@$paths);
+      my $lun = find_by_key($luns, $mpLun->lun);
+
+      my $cap = $lun->{capacity};
+      my $deviceUuidPath = defined($lun->{uuid}) ? ("vml." . $lun->uuid) : "";
+
+      foreach my $path (@$paths) {
+         my $hba = find_by_key($hbas, $path->adapter);
+         my $isFC = $hba->isa("HostFibreChannelHba");
+         my $state = ($path->{pathState} ? 
+                       (($path->pathState eq "active") ? "On active" : $path->pathState) :
+                       "");
+         # defect 173631
+         my $pciString = get_pci_string($hba);
+         printf("%s %s %s %s %s %s %s\n",
+             defined($lun->{canonicalName}) ? $lun->{canonicalName} : "",
+             $deviceUuidPath,
+             defined($lun->{devicePath}) ? $lun->{devicePath} : "",
+             $path->name,
+             $isFC ? "FC" : "Local",
+             $pciString,
+             $isFC ? $hba->nodeWorldWideName . "<->" . $hba->portWorldWideName
+             : "");
+      }
+      print "\n";
+   }
+}
+
+sub set_policy {
+   my($ss, $lun, $path, $preferred, $policy) = @_;
+
+   my @arr = ();
+   my $policyChange = 0;
+   
+   my $multipathLunPolicy;
+
+   my $policyRef = find_policy_for_lun($ss, $lun);
+   if (defined($policy) && 
+      (!defined($policyRef) || ($policyRef->{policy} ne $policy))) {
+      $policyChange = 1;
+   }
+
+   if (defined($preferred) && !defined($policy)) {
+      unless ($policyRef->isa("HostMultipathInfoFixedLogicalUnitPolicy")) {
+         print "To set preferred, existing policy must be 'fixed'.\n";
+         Opts::usage();
+         exit 1;
+      } else {
+         $policy = "fixed";
+      }
+   }
+   # defect 173651  
+   if ($policy eq "fixed") {
+     if (defined($path)) {
+        $multipathLunPolicy = new HostMultipathInfoFixedLogicalUnitPolicy();
+        $multipathLunPolicy->{prefer} = $path;
+     }
+   } else {
+      $multipathLunPolicy = new HostMultipathInfoLogicalUnitPolicy();
+   }
+   $multipathLunPolicy->{policy} = $policy;
+
+   eval { $ss->SetMultipathLunPolicy (lunId => $lun , policy => $multipathLunPolicy); };
+   if ($@) {
+      VIExt::fail("Unable to set policy: " . ($@->fault_string));
+   }
+
+   if (defined($preferred)) {
+      printf("Setting %s -- %s as preferred path\n", $lun, $path);
+   }
+   if ($policyChange) {
+      printf("Setting %s policy to %s\n", $lun, $policy);
+   }
+}
+
+sub set_state {
+   my ($ss, $lun, $path, $state) = @_;
+   if ($state eq "on") {
+      eval { $ss->EnableMultipathPath(pathName => $path); };
+      if ($@) {
+         VIExt::fail("Unable to enable path: " . ($@->fault_string));
+      }
+   } else {
+      eval { $ss->DisableMultipathPath(pathName => $path); };
+      if ($@) {
+         VIExt::fail("Unable to disable path: " . ($@->fault_string));
+      }
+   }
+
+   printf("Setting %s -- %s state to %s\n", $lun, $path, $state);
+}
+
+
+__END__
+
+=head1 NAME
+
+vicfg-mpath35 - configure multipath settings for Fibre Channel or iSCSI LUNs
+
+=head1 SYNOPSIS
+
+ vicfg-mpath35 [OPTIONS]
+
+=head1 DESCRIPTION
+
+vicfg-mpath35 provides an interface to configure multipath settings for Fibre Channel or iSCSI LUNs on ESX/ESXi version 3.5 hosts. Use vicfg-mpath
+for ESX/ESXi 4.0 and later hosts.
+
+=head1 OPTIONS
+
+=over
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the command with no arguments or with C<--help> has the same effect.
+
+=item B<--list | -l>
+
+Lists all LUNs and the paths to these LUNs through adapters on the 
+system. For each LUN, the command displays the type, internal name, console 
+name, size, and paths, and the policy used for path selection.
+
+=item B<--policy | -p>
+
+Sets the policy for a given LUN to one of "mru", "rr", or "fixed".
+Most Recently Used (mru) selects the path most recently used to send I/O to a device. 
+Round Robin (rr) rotates through all available paths. Fixed (fixed) uses 
+only the active path. This option requires that you also specify the --lun option.
+
+=item B<--state | -s>
+
+Sets the state of a given LUN path to either "on" or "off".
+This option requires that you also specify the C<--lun> and C<--path> options.
+
+=item B<--preferred | -f>
+
+Sets the given path to be the "preferred" path for a given LUN.
+This option requires that you also specify the C<--lun> and C<--path> options.
+
+=item B<--query | -q>
+
+Queries a specific LUN for its information and print it.
+This option requires that you also specify the C<--lun> option.
+
+=item B<--path | -P>
+
+Specifies the path to use in other operations. You cannot use this option by itself.
+
+=item B<--lun | -L>
+
+Specifies the LUN to use in other operations. You cannot use this option by itself.
+
+=item B<--detailed | -d>
+
+Displays all information about a LUN and its paths including 
+the vml name of the LUN.
+
+=item B<--bulk | -b>
+
+Shows all LUNs and paths in a format easily parsed by scripts.
+
+=item B<--hbas | -a>
+
+Prints the list of HBAs that can be identified by a unique ID.
+This option lists Fibre Channel and iSCSI devices. Parallel and Block 
+devices do not appear in the list.
+
+=item B<--vihost | -h>
+
+When you execute this command with C<--server> pointing 
+to a vCenter Server system, you can use C<--vihost> to specify the ESX/ESXi host to run the command against.
+
+=back
+
+=head1 EXAMPLES
+
+List all LUNs and the paths to these LUNs through adapters on the system:
+
+ vicfg-mpath35 --server <servername> --username <user name> 
+    --password <password> -l
+
+Set the policy for a specific LUN. Requires 
+--lun is also specified to indicate the LUN to operate on:
+
+ vicfg-mpath35 --server <server name> --username <user name>
+    --password <password> --policy mru --lun vmhba0:8:0
+
+Set the state for a specific LUN path. Requires both --lun and --path are specified.
+This operation may appear to fail if there is active I/O on a path that is set to "off":
+
+ vicfg-mpath35 --server <server name> --username <user name>
+    --password <password> --state <on|off> --path <path flag> --lun <lunname>
+
+Set the given path to be the preferred path for the given LUN. Requires both --path and --lun are specified:
+
+ vicfg-mpath35 --server <server name> --username <user name> 
+    --password <password> --preferred --path vmhba0:8:0 --lun vmhba0:8:0
+
+Query the information on a specific LUN:
+
+ vicfg-mpath35 --server <server name> --username <user name>
+    --password <password> --query --lun vmhba0:8:0
+
+Indicate which LUN to operate on. You can specify the LUN either with its internal VMkernel vmhba name 
+(vmhbaX:X:X) or with its vml name as found in /vmfs/devices/disks:
+
+ vicfg-mpath35 --server <server name> --username <user name> 
+    --password <pasword> --policy mru --lun vmhba0:8:0
+
+Return a bulk path listing suitable for parsing:
+
+ vicfg-mpath35 --server <server name> --username <user name>
+    --password <password> -b
+
+=cut

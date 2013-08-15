@@ -1,0 +1,257 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+#
+# vicfg-module - VMware ESX Server kernel module configuration
+#
+# SYNOPSIS
+#      vicfg-module
+#
+# DESCRIPTION
+#      vicfg-module enables configuration of kernel module options.
+
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!    The host to use when connecting via a vCenter Server (valid for vSphere 4.0 and later)!,
+      required => 0,
+   },
+   'set-options' => {
+      alias => 's',
+      type => "=s",
+      help => qq!
+             Set the option string to be passed to the module when it is loaded.
+      !,
+      required => 0,
+   },
+
+   'get-options' => {
+      alias => 'g',
+      type => "",
+      help => qq!
+             Get the option string configured to be passed to the module
+             when it is loaded.
+      !,
+      required => 0,
+   },
+
+   'list' => {
+      alias => "l",
+      type => "",
+      help => qq!  List the set of modules on the host (valid for vSphere 4.0 and later).
+      !,
+      required => 0,
+   },
+
+   'query' => {
+      alias => "q",
+      type => "",
+      help => qq!  Query enabled modules options (valid for vSphere 4.0 and later).
+      !,
+      required => 0,
+   },
+
+   '_default_' => {
+      type => "=s",
+      help => qq!
+             The name of the module.
+      !,
+      required => 0,
+   },
+);
+
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $name = Opts::get_option('_default_');
+my $set_options = Opts::get_option('set-options');
+my $get_options = Opts::get_option('get-options');
+my $list = Opts::get_option('list');
+my $query = Opts::get_option('query');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['configManager.kernelModuleSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+if (defined($set_options) && defined($get_options)) {
+   Opts::usage();
+} elsif (defined($set_options)) {
+   set_options($name, $set_options);
+} elsif (defined($get_options)) {
+   get_options($name);
+} elsif (defined($list)) {
+   list();   
+} elsif (defined($query)) {
+   query();
+}
+else {
+   Opts::usage();
+   exit 1;
+}
+
+Util::disconnect();
+
+sub get_kernel_module_system_view {
+   my $kmsys_view;
+   eval {
+      if ($host_view->{'configManager.kernelModuleSystem'}) {
+         $kmsys_view = Vim::get_view (mo_ref => $host_view->{'configManager.kernelModuleSystem'});
+      } else {
+         my $kmsys_moref = ManagedObjectReference->new(type => 'HostKernelModuleSystem',
+                                                       value => 'kernelModuleSystem');
+         $kmsys_view = Vim::get_view(mo_ref => $kmsys_moref);
+      }
+   };
+   if ($@) {
+      VIExt::fail("Error: Could not get HostKernelModuleSystem: " . ($@->fault_string));
+   } elsif (!defined($kmsys_view)) {
+      VIExt::fail("Error: KernelModuleSystem not found.\n");
+   } else {
+      return $kmsys_view;
+   }
+}
+
+sub set_options {
+   my ($name, $options) = @_;
+   eval {
+      my $kmsys_view = get_kernel_module_system_view();
+      $kmsys_view->UpdateModuleOptionString(name => $name, options => $options);
+   };
+   if ($@) {
+      VIExt::fail("Error: Unable to update module options: " . ($@->fault_string));
+   }
+}
+
+sub get_options {
+   my ($name) = @_;
+   my $options;
+   eval {
+      my $kmsys_view = get_kernel_module_system_view();
+      $options = $kmsys_view->QueryConfiguredModuleOptionString(name => $name);
+   };
+   if ($@) {
+      VIExt::fail("Error: Unable to query module options: " . ($@->fault_string));
+   }
+   $options = "" if (!defined($options));
+   print "$name options = '$options'\n";
+}
+
+# bug 337769
+sub query {
+   eval {
+      my $kmsys_view = get_kernel_module_system_view();
+      my $modules = $kmsys_view->QueryModules();
+      printf("%-25s%-7s%-7s\n", "Name                     ", "ID     ", "Loaded ");      
+      foreach (@$modules) {
+         if($_->{enabled} eq '1') {
+            printf("%-25s%-7s%-7s\n", $_->{name}, $_->{id}, $_->{loaded} ? "Yes" : "No");
+         }
+      }
+   };
+   if ($@) {
+      VIExt::fail("This operation is not supported on this host.\n");
+   }
+}
+
+sub list {
+   eval {
+      my $kmsys_view = get_kernel_module_system_view();
+      my $modules = $kmsys_view->QueryModules();
+      printf("%-25s%-7s%-7s\n", "Name                     ", "ID     ", "Loaded ");      
+      foreach (@$modules) {
+         printf("%-25s%-7s%-7s\n", $_->{name}, $_->{id}, $_->{loaded} ? "Yes" : "No");
+      }
+   };
+   if ($@) {
+      VIExt::fail("This operation is not supported on this host.\n");
+   }
+}
+
+__END__
+
+=head1 NAME
+
+vicfg-module - enable configuration of VMkernel module options
+
+=head1 SYNOPSIS
+
+ vicfg-module [<connection_options>]
+    [--get-options <module_name> |
+     --help |
+     --list |
+     --set-options "<option> <value>" <module_name> |
+     --vihost <esx_host> ]
+
+=head1 DESCRIPTION
+
+The vicfg-module command supports setting and retrieving VMkernel module options. 
+This command is a vSphere CLI implementation of the esxcfg-module service console command, 
+but it supports only some of the options esxcfg-module supports. The command is commonly used when 
+VMware Technical Support, a Knowledge Base article, or VMware documentation instruct you to do so. 
+
+=head1 OPTIONS
+
+=over
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-module --help>
+for a list of all connection options.
+
+=item B<--get-options | -g E<lt>module_nameE<gt>>
+
+Returns the option string configured to be passed to the
+module when it is loaded. This string is not necessarily the option
+string currently in use by the module.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--list | -l>
+
+Lists the set of modules on the host (valid for vSphere 4.0 and later).
+
+=item B<--set-options | -s "E<lt>optionE<gt>=E<lt>valueE<gt>" E<lt>module_nameE<gt>>
+
+Specifies the option string to be passed to the module 
+when the module is loaded.
+
+=item B<--vihost | -h>
+
+When you run a vSphere CLI command with the C<--server> option pointing to a vCenter Server system, 
+use C<--vihost> to specify the ESX/ESXi host to run the command against. 
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Use C<vicfg-module --help> for a list of common options including connection options. 
+
+Configure a supported NIC to use NetQueue:
+
+ vicfg-module <conn_options> -s "intr_type=2 rx_ring_num=8" s2io
+
+Verify that NetQueue has been configured:
+
+ vicfg-module <conn_options> -g s2io
+
+List the set of modules on the host:
+
+ vicfg-module <conn_options> -l
+    

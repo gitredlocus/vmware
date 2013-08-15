@@ -1,0 +1,483 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+#
+# VMware ESX Server Host patching tool
+#
+# USAGE:
+#    vihostupdate [GENERAL_VIPERL_OPTIONS] [ADDITIONAL_OPTIONS]
+#
+#    where acceptable ADDITIONAL_OPTIONS are the following:
+#
+#    -q|--query                               list installed packages on host.
+#    -s|--scan --metadata|-m metadata_xml     scan for packages in dir that applies to host
+#    -i|--install --metadata|-m metadata_xml  install package in directory
+#    -b|--bundle bundle_zip                   unpacks downloaded update bundle zip file
+#    -i|--install --bundle|-b bundle_zip      install package by first unpacking bundle
+#
+# NOTE : this tool only works when connecting directly to the ESX 3i host, not
+#        when connecting to a vCenter Server.
+
+use strict;
+use warnings;
+
+use File::stat;
+use File::Spec;
+use LWP::UserAgent;
+use URI::URL;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my $BUNDLE_METADATA = "metadata.xml";
+my $CONTENTS_METADATA = "contents.xml";
+
+my $ESXHW_PRODUCTLINE_ID = "embeddedEsx";
+my $PATCH_DIR = "rcli_patch";
+
+my %opts = (
+   query => {
+      alias => "q",
+      type => "",
+      help => qq!
+             Query host for installed packages.
+      !,
+      required => 0,
+   },
+   scan => {
+      alias => "s",
+      type => "",
+      help => qq!
+             Scan host for applicable updates (not yet supported).
+      !,
+      required => 0,
+   },
+   install => {
+      alias => "i",
+      type => "",
+      help => qq!
+             Install update package from a given directory
+      !,
+      required => 0,
+   },
+   bundle => {
+      alias => "b",
+      type => "=s",
+      help => qq!
+             Unpacks the zip bundle containing the updates.
+      !,
+      required => 0,
+   },
+   metadata => {
+      alias => "m",
+      type => "=s",
+      help => qq!
+             The metadata the update bundle is unpacked into.
+      !,
+      required => 0,
+   },
+   'force' => {
+      alias => "f",
+      type => "",
+      help => qq!  Always reboots the host after a successful host update.!,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['config.product.version', 'configManager.patchManager']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+check_version($host_view);
+
+my $query = Opts::get_option('query');
+my $install = Opts::get_option('install');
+my $scan = Opts::get_option('scan');
+my $metadata = Opts::get_option('metadata');
+my $bundle = Opts::get_option('bundle');
+my $force = Opts::get_option('force');
+my $target_unpack_dir = "_UNUSED_";
+
+Opts::assert_usage(!($metadata && $bundle),  
+                   "\nThe metadata and bundle options cannot be both specified.");
+
+if ($query) {
+   query_host_components();
+} elsif ($scan) {
+   VIExt::fail("The scan operation is currently not supported.");
+} elsif ($bundle) {
+   unless (-e $bundle) {
+      VIExt::fail("No host update package found.");
+   }
+
+   my $bundle_dir = unpack_bundle($bundle, $target_unpack_dir);
+   if (defined($bundle_dir)) {
+      my $metadata = File::Spec->catfile($bundle_dir, $BUNDLE_METADATA); 
+      if ($install) {
+         install_update($host_view, $metadata);
+      }
+   } else {
+      VIExt::fail("Unable to unpack update package.");
+   }
+} elsif ($install) {
+   if ($metadata) {
+      install_update($host_view, $metadata);
+   }
+}
+
+Util::disconnect();
+
+sub request_confirm {
+   my $msg = shift;
+   
+   return 1 if defined($force);
+
+   print "$msg\nType 'yes' to continue:\n";
+   my $input = scalar(<STDIN>);
+   chop($input);
+   if ($input =~ /yes/i) {
+      return 1;
+   }
+   return 0;
+}
+# 
+# Displayes the packages installed on the host.
+#
+sub query_host_components {
+   my ($product_line_id, $full_name, $product_str, $package_infos) = get_product_info();
+
+   if ($product_line_id ne $ESXHW_PRODUCTLINE_ID) {
+      VIExt::fail("This tool currently only supports patching of ESX HW hosts.");
+   }
+
+   print "$full_name\n\n";
+   print "Installed packages:\n";
+   foreach my $pi (@$package_infos) {
+      my ($dir, $rel) = @$pi;
+      printf("%-15s %d\n", $dir, $rel);
+   }
+}
+
+# 
+# Query the host for it's product information and installed packages.
+#
+sub get_product_info {
+   my $mo = ManagedObjectReference->new(type => 'ServiceInstance', 
+                                        value => 'ServiceInstance');
+   my $sc = Vim::get_service_content();
+
+   my $about = $sc->{about};
+   my $product_str = $about->{productLineId} . " " .
+                     $about->{version} . " " .
+                     $about->{localeVersion};
+   my $product_line_id = $about->{productLineId};
+   my $full_name = $about->{fullName};
+
+   my @package_infos = ();
+
+   my $si = Vim::get_view(mo_ref => $mo);
+   if ($si) {
+      my $product_component_infos;
+      eval { $product_component_infos = $si->RetrieveProductComponents(); };
+      if ($@) {
+         VIExt::fail("Operation not applicable : " . $@->fault_string);
+      }
+      foreach my $info (@$product_component_infos) {
+         if ($info->{name} && $info->{release}) {
+            push (@package_infos, [$info->{name}, $info->{release}]);
+         }
+      }
+   }
+
+   return ($product_line_id, $full_name, $product_str, \@package_infos);
+}
+
+sub is_package_applicable {
+   my ($pkg, $installed_pkgs) = @_;
+
+   foreach my $installed_pkg (@$installed_pkgs) {
+
+      if ( ($pkg->[0] eq $installed_pkg->[0]) &&
+           ($pkg->[1] <= $installed_pkg->[1]) ) {
+         return 0;
+      }
+   }
+
+   return 1;
+}
+
+#
+# Performs the patch. Once applicability is determined, uploads the
+# relevant files to the server and invoke the Patch Manager.
+#
+sub install_update {
+   my ($host_view, $metadata) = @_;
+   my $patched = 0;
+
+   my $pm = Vim::get_view (mo_ref => $host_view->{'configManager.patchManager'});
+   unless ($pm) {
+      VIExt::fail("Patch manager not found. Install failed");
+   }
+
+   my ($product_line_id, $installed_product_name, 
+      $installed_product_str, $installed_package_infos) = 
+      get_product_info();
+
+   if ($product_line_id ne $ESXHW_PRODUCTLINE_ID) {
+      VIExt::fail("Operation currently only supported for ESX HW.");
+   }
+
+   my ($bundle_product_str, $package_infos) = get_bundle_info($metadata);
+
+   if ($installed_product_str ne $bundle_product_str) {
+      VIExt::fail("$bundle_product_str does not apply to target host " . 
+                  "($installed_product_str)");
+   }
+
+   my $dir = "";
+   foreach my $pi (@$package_infos) {
+      my ($name, $rel, $dir) = @$pi;
+      if (is_package_applicable($pi, $installed_package_infos)) {
+         print "Installing : $dir\n";
+
+         my $file_list = get_package_files($dir);
+
+         foreach my $file (@$file_list) {
+            # Certain combinations of perl/lwp will construct 
+            # corrupted HTTP PUT requests when binary content
+            # and utf8-tagged URL are involved.
+            #
+            # Downgrading the utf8 url string returned in
+            # the SOAP response works around the problem.
+            utf8::downgrade($file);
+
+            my $file_path = File::Spec->catfile("$dir", $file);
+            print "Copy to server : $file ...\n";
+            VIExt::http_put_tmp_file($file_path, "$PATCH_DIR/$file");
+         }
+
+         my $locator = new HostPatchManagerLocator();
+         $locator->{url} = "file:///tmp/$PATCH_DIR";
+
+         eval { 
+            $pm->InstallHostPatch(repository => $locator, updateID => "update", 
+               force => undef);
+         };
+         if ($@) {
+            VIExt::fail("Operation failed : " . $@->fault_string);
+         } else {
+            $patched = 1;
+         }
+         # defect 233404
+         my $status = "Success";
+         File::Path::rmtree([$dir], 0, 1) or $status = "Fail";
+         if ($status eq "Fail") {
+            $status = "Fail ($!)";
+            print "Removed $dir $status</I>";
+         } else {
+            $status = "Success";
+            print "Removed $dir $status</I>";
+         }
+      } else {
+         print "Not applicable : $dir. Skipped.\n";
+      }
+   }
+
+   if ($patched) {
+      if (request_confirm("\nThe host needs to be rebooted for the new " . 
+            "firmware to take effect.\n")) {
+         print "Rebooting host ... \n";
+         # bug 321975
+         eval {
+            $host_view->RebootHost(force => 1);
+         };
+         if ($@) {
+            VIExt::fail("Host reboot failed : " . $@->fault_string);
+         } else {
+            exit 1;
+         }
+      } else {
+         print "Host reboot skipped.\n"; 
+      }
+   }
+}
+
+#
+# Retrieves the the product and package information of a
+# update bundle.
+#
+sub get_bundle_info {
+   my ($metadata) = @_;
+
+   my $xml_parser = XML::LibXML->new;   
+   my $root;   
+   eval { $root = $xml_parser->parse_file($metadata); };
+   if ($@) {
+      Carp::confess("Unable to parse $metadata");
+   }   
+
+   my $product = $root->documentElement()->getChildrenByTagName("name");
+   my $version = $root->documentElement()->getChildrenByTagName("version");
+   my $locale = $root->documentElement()->getChildrenByTagName("locale");
+
+   my $prod_string = "$product $version $locale";
+
+   my $packages = $root->documentElement()->getChildrenByTagName("package");
+   my @package_infos = ();
+
+   foreach my $package (@$packages) {
+      my $pkg_dir = $package->findvalue("name");
+      my $pkg_name = $package->findvalue("scanData/descriptor/name");
+      my $rel = $package->findvalue("scanData/descriptor/rel");
+      push (@package_infos, [$pkg_name, $rel, $pkg_dir]);
+   }
+
+   return ($prod_string, \@package_infos);
+}
+
+#
+# Retrieves the list of files to be uploaded to the host
+# to be used in the patching.
+#
+sub get_package_files {
+   my ($dir) = @_;
+
+   my $contents_file = File::Spec->catfile("$dir", $CONTENTS_METADATA);
+   
+   my $xml_parser = XML::LibXML->new;   
+   my $result;   
+   eval { $result = $xml_parser->parse_file($contents_file); };
+   if ($@) {
+      Carp::confess("Unable to parse $CONTENTS_METADATA");
+   }   
+   my $files = $result->documentElement()->getChildrenByTagName("file");
+   my @filenames = map { $_->getAttribute("name") } @$files;
+   push(@filenames, $CONTENTS_METADATA);
+   
+   return \@filenames;
+}
+
+#
+# Unpacks two outer zip files to arrive at the host package.
+# returns the directory containing the bundle metadata.
+#
+sub unpack_bundle {
+   my ($bundle, $dir) = @_;
+
+   print "unpacking $bundle ...\n";
+   my $members = VIExt::unzip_file($bundle, $dir);
+   my $bundle_dir = "";
+
+   foreach my $member (@$members) {
+      if ($member =~ /^(.*)\/$/) {
+         $bundle_dir = $1;
+      }
+      if ($member =~ /\.zip$/) {
+         unless (VIExt::verify_signature($member, "$member.sig")) {
+            print STDERR "signature mismatch : $member\n";
+            return undef;
+         }
+         print "unpacking $member ...\n";
+         $members = VIExt::unzip_file($member, $dir);
+         unlink("$member");
+         unlink("$member.sig");
+      }
+   }
+
+   return $bundle_dir;
+}
+
+sub check_version {
+   my ($host_view) = @_;
+   my $host_version = $host_view->{'config.product.version'};
+   if ($host_version !~ /^3.5/) {
+      VIExt::fail("This command is only supported on ESXi 3.5 platform.  Target host version is $host_version");
+   }
+}
+
+__END__
+
+=head1 NAME
+
+vihostupdate35 - manage software installation packages on a VMware Infrastructure 3.5 host using vSphere CLI 4.0 and later. 
+
+=head1 SYNOPSIS
+
+ vihostupdate35 [<connection_options>]
+  [ --help |
+    --install [--bundle <zip_location>|--metadata <zip_location>] |
+    --query |
+    --remove <bulletin> |
+    --scan [--bundle <location>|--metadata <zip_location>]]
+
+
+=head1 DESCRIPTION
+
+vihostupdate35 provides an interface to list installed packages on a host, scan for 
+packages that apply to a host, install packages in a specified directory, unpack a 
+downloaded update, and install an update package.
+
+Run this command only against ESX/ESXi version 3.5 hosts. Run vihostupdate agains ESX/ESXi 4.0 and later hosts. 
+
+=head1 OPTIONS
+
+=over
+
+=item B<--bundle | -b>
+
+Location of the offline bundle. Use either -b or -m but not both. 
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vihostupdate35 --help>
+for a list of all connection options. 
+
+=item B<--force | -f>
+
+Always reboot the host after a successful host update.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the command with no arguments or with C<--help> has the same effect.
+
+=item B<--install | -i>
+
+Installs an update package from a given directory.
+
+=item B<--metadata | -m>
+
+Specifies the location of the depot metadata.xml ZIP file that contains information about 
+the update bundle. Use either -b or -m, not both.
+
+=item B<--query | -q>
+
+Lists installed packages on the host.
+
+=back
+
+=head1 EXAMPLES
+
+Query host for installed packages:
+
+ vihostupdate35 <connection_options> -q
+
+Unpack and install the update:
+
+ vihostupdate35 <connection_options> -i -b <bundle zip file>
+
+Unpack a zip bundle containing the update but do not install the update:
+
+ vihostupdate35 <connection_options> -b <bundle zip file>
+
+Install the update using a metadata file:
+
+  vihostupdate35 <connection_options> -i -m <bundle zip file>/metadata.xml
+
+=cut

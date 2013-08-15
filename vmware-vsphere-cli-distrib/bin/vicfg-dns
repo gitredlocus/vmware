@@ -1,0 +1,317 @@
+#!/usr/bin/perl -w
+#
+# Copyright 2006 VMware, Inc.  All rights reserved.
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my %opts = (
+   hostname => {
+      alias => "n",
+      type => "=s",
+      help => qq!  "The hostname to be set."  !,
+      required => 0,
+   },
+   dhcp => {
+      alias => "H",
+      type => "=s",
+      help => qq!  "The option (yes | no) to allow or disallow the use of DHCP."  !,
+      required => 0,
+   },
+   vnic => {
+      alias => "V",
+      type => "=s",
+      help => qq!  "The virtual nic adapter to use to override the system DNS (required for --dhcp yes)"  !,
+      required => 0,
+   },   
+   domain => {
+      alias => "d",
+      type => "=s",
+      help => qq!  "The domain name to be set."  !,
+      required => 0,
+   },
+   dns => {
+      alias => "D",
+      type => "=s",
+      help => qq!  "The DNS server to be set (IPv6 address valid for vSphere 4.0 and later)."  !,
+      required => 0,
+   },
+   'refresh' => {
+      alias => "r",
+      type => "",
+      help => qq!    Refresh the network system.!,
+      required => 0,
+   },   
+   vihost => {
+      alias => "h",
+      type => "=s",
+      help => qq!  "The host to use when connecting via a vCenter Server."  !,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate(\&validate);
+
+my $vihost = Opts::get_option('vihost');
+my $hostname = Opts::get_option('hostname');
+my $domainname = Opts::get_option('domain');
+my $dhcp = Opts::get_option('dhcp');
+my $vnic = Opts::get_option('vnic');
+my $dns = Opts::get_option('dns');
+my $refresh = Opts::get_option('refresh');
+
+Util::connect();
+
+my $host_view = VIExt::get_host_view(1, ['configManager.networkSystem']);
+Opts::assert_usage(defined($host_view), "Invalid host.");
+
+my $networkSystem_view = 
+   Vim::get_view (mo_ref => $host_view->{'configManager.networkSystem'});
+
+if(defined($refresh)) {
+   eval{$networkSystem_view->RefreshNetworkSystem();};
+   if ($@) {
+      VIExt::fail("Unable to refresh the DNS Configuration: " 
+                  . ($@->fault_string));
+   }
+}
+# bug 372665
+elsif((!defined $hostname) && (!defined $dhcp) && (!defined $domainname) && (!defined $dns) && (!defined $vnic)) {
+   display_network_config($networkSystem_view);
+}
+elsif(defined $vnic && (!defined $dhcp)) { 
+   VIExt::fail("Option vnic can only be used along with option dhcp.");
+}
+elsif(defined $vnic && defined $dhcp && $dhcp ne 'yes') {
+   VIExt::fail("Option vnic can only be used when dhcp option is set to yes.");
+}
+else {
+   update_network_config($networkSystem_view);
+}
+
+Util::disconnect();
+
+sub display_network_config {
+   my ($networkSystem_view) = @_;
+   my $dnsConfig = $networkSystem_view->dnsConfig;
+
+   my $hostname = $dnsConfig->hostName;
+   my $domainname = $dnsConfig->domainName;
+   my $dhcp_usage = $dnsConfig->dhcp;
+   my @dns_servers = $dnsConfig->address;
+
+   print "DNS Configuration\n\n";
+   print "Host Name      " .$hostname."\n";
+   print "Domain Name    " .$domainname."\n";
+   if($dhcp_usage == 0) {
+      print "DHCP           false\n";
+   }
+   else {
+      print "DHCP           true\n";
+   }
+   my $count = 0;
+   print "DNS Servers\n";
+   foreach my $i (@dns_servers) {
+      foreach  (@$i) {
+         print "               ".$_."\n";
+      }
+   }
+}
+
+sub update_network_config {
+   my ($networkSystem_view) = @_;
+   my $dhcp_usage = undef;
+   my @dns_servers = undef;
+   my $dnsConfig = $networkSystem_view->dnsConfig;
+   
+   # bug 315673
+   if (($hostname || $domainname || $dns) && $dnsConfig->dhcp) {
+      VIExt::fail("Can not modify configuration when host is in DHCP mode.");
+   }
+   
+   if(!defined $hostname) {
+      $hostname = $dnsConfig->hostName;
+   }
+   if(!defined $domainname) {
+      $domainname = $dnsConfig->domainName;
+   }
+   if(!defined $dhcp) {
+      $dhcp_usage = $dnsConfig->dhcp;
+   }
+   else {
+      $dhcp_usage = 0; 
+      if($dhcp eq 'yes') {
+         $dhcp_usage = 1;
+      }
+   }
+   my $hostDnsConfig = undef;
+   if(!defined $dns) {
+      @dns_servers = $dnsConfig->address;
+      if ((defined $dhcp) && ($dhcp eq 'yes')) {
+         if (!defined $vnic) {
+            VIExt::fail("Must specify a vnic adapter that is configured with DHCP.");
+         }
+         $hostDnsConfig = HostDnsConfig->new(hostName=>$hostname,
+                                             domainName=>$domainname,
+                                             dhcp=>$dhcp_usage,
+                                             virtualNicDevice=>$vnic,
+                                             address=>@dns_servers);
+      } else {
+         $hostDnsConfig = HostDnsConfig->new(hostName=>$hostname,
+                                             domainName=>$domainname,
+                                             dhcp=>$dhcp_usage,
+                                             address=>@dns_servers);
+      }
+   }
+   else {
+      my @items  = split(/,/,$dns);
+      foreach my $i (@items) {
+         push @dns_servers, $i;
+      }
+      $hostDnsConfig = HostDnsConfig->new(hostName=>$hostname,
+                                          domainName=>$domainname,
+                                          dhcp=>0,
+                                          address=>\@dns_servers);
+   }
+   
+   eval{$networkSystem_view->UpdateDnsConfig(config=>$hostDnsConfig);};
+    if ($@) {
+      VIExt::fail("Unable to update the DNS Configuration: " 
+                  . ($@->fault_string));
+   }
+   print "Updated Host DNS network configuration successfully.\n"
+}
+
+sub validate {
+   my $valid = 1;
+   my $hostname = Opts::get_option('hostname');
+   my $dhcp = Opts::get_option('dhcp');
+   my $domain = Opts::get_option('domain');
+   my $dns = Opts::get_option('dns');
+   if (defined $dhcp) {
+      if(!($dhcp eq 'yes' || $dhcp eq 'no')) {
+         print "Invalid DHCP argument. Must be either yes or no.";
+         $valid = 0;
+      }
+      if($dhcp eq 'yes' && defined $dns) {
+         print "When DHCP is enabled the DNS property cannot be set.";
+         $valid = 0;
+      }
+   }
+   return $valid;
+}
+
+__END__
+
+=head1 NAME
+
+vicfg-dns - configure DNS properties
+
+=head1 SYNOPSIS
+
+ vicfg-dns <conn_options>
+     [--dhcp [yes|no] |
+      --dns <server_list> |  
+      --domain <domain_name> |
+      --help |
+      --hostname <dns_host> |
+      --vnic <virtual_nic> |
+      --refresh |
+      --vihost <esx_host> ]
+     
+
+To list the existing DNS configuration, call the command without options.
+
+=head1 DESCRIPTION
+
+The vicfg-dns command lists and specifies the DNS configuration of your ESX/ESXi host. 
+Call the command without command-specific options to list the existing DNS configuration. 
+
+If you attempt to change the host name, domain name, or DNS server on hosts that use DHCP (dynamic host configuration protocol), an error results. 
+
+=head1 OPTIONS
+
+=over
+
+=item B<conn_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-dns --help>
+for a list of all connection options.
+
+=item B<--dhcp | -H [yes|no]>
+
+Specifies whether or not the ESX/ESXi host should use DHCP to determine the DNS 
+configuration automatically. If you use this option, you must specify C<yes> or C<no>.
+
+=item B<--dns | -D E<lt>server_listE<gt>>
+
+DNS server or servers to be used. Specify a comma-separated list of DNS servers, in order of preference.
+For vSphere 4.0 and later, IPv6 addresses are valid. 
+
+=item B<--domain | -d E<lt>domain_nameE<gt>>
+
+The domain name portion of the DNS name. For example, C<comp-xyz.com>.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the script with no arguments or with C<--help> has the same effect.
+
+=item B<--hostname | -n E<lt>dns_hostE<gt>>
+
+Human-readable host name portion of the DNS name. For example, C<esx01>.
+
+=item B<--vnic | -V E<lt>virtual_nicE<gt>>
+
+The virtual network adapter to use in overriding the system DNS. This option
+is required when --dhcp is yes.  For ESX systems, <virtual_nic> must be one of the Service Console network 
+adapters. For ESXi, <virtual_nic> must be one of the VMkernel network adapters. The specified  virtual network
+adapter must have DHCP configured.
+
+=item B<--refresh | -r>
+
+Refresh the network system.
+
+=item B<--vihost | -h E<lt>esx_hostE<gt>>
+
+When you execute a vSphere CLI with the C<--server> option pointing 
+to a vCenter Server system, use C<--vihost> to specify the ESX/ESXi
+host to run the command against.
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options. 
+Run C<vicfg-dns --help> for a list of common options including connection options. 
+
+Display DNS properties for the specified server. 
+The information includes the host name, domain name, DHCP setting (true or false) 
+and DNS servers on the ESX/ESXi host:
+
+ vicfg-dns <conn_options>
+
+Configure the DNS host name property:
+
+ vicfg-dns <conn_options> -n <host name>
+
+Configure the DNS domain name property:
+
+ vicfg-dns <conn_options> -d <domain name>
+
+Specify that the host should use DHCP to determine the DNS configuration:
+
+ vicfg-dns <conn_options> --dhcp yes --vnic <virtual_nic>
+
+Disable DHCP:
+
+ vicfg-dns <conn_options> --dhcp no
+
+=cut
+ 

@@ -1,0 +1,633 @@
+#!/usr/bin/perl -w
+#
+#
+# Copyright 2007 VMware, Inc.  All rights reserved.
+#
+# VMware ESX Server Remote File System Access Tool
+#
+# SYNOPSIS
+#      vifs --dir <remote_dir>
+#      vifs --rmdir <remote_dir>
+#      vifs --rm <remote_path>
+#      vifs --mkdir <remote_dir>
+#      vifs --put <local_path> <remote_path>
+#      vifs --get <remote_path> <local_path>
+#      vifs --listds
+#      vifs --listdc
+#      vifs [--force] --move <remote_source_path> <remote_target_path>
+#      vifs [--force] --copy <remote_source_path> <remote_target_path>
+# 
+# DESCRIPTION
+#      vifs enables common operations on the remote host's file system.
+#      operations include directory browsing, creation, deletion,
+#      file moving, copying, deleting, uploading and downloading.
+# 
+
+use strict;
+use warnings;
+
+use VMware::VIRuntime;
+use VMware::VILib;
+use VMware::VIExt;
+
+my @options = (
+    ['copy', '_default_'],
+    ['copy', 'force', '_default_'],
+    ['move', '_default_'],
+    ['move', 'force', '_default_'],
+    ['put', '_default_'],
+    ['get', '_default_'],
+    ['mkdir'],
+    ['rmdir'],
+    ['rmdir', 'force'],
+    ['rm'],
+    ['dir'],
+    ['listds'],
+    ['listds', 'dc'],
+    ['listdc'],
+);
+
+my %opts = (
+   'force' => {
+      alias => "f",
+      type => "",
+      help => qq! Allows overwriting of destination file for a copy or move.!,
+      required => 0,
+   },
+   'copy' => {
+      alias => "c",
+      type => "=s",
+      help => qq! Copy a file or a directory to another location.!,
+      required => 0,
+   },
+   'move' => {
+      alias => "m",
+      type => "=s",
+      help => qq! Move a file or a directory to another location.!,
+      required => 0,
+   },
+   'rm' => {
+      alias => "r",
+      type => "=s",
+      help => qq! Deletes a file or a directory.!,
+      required => 0,
+   },
+   'mkdir' => {
+      alias => "M",
+      type => "=s",
+      help => qq! Creates a directory.!,
+      required => 0,
+   },
+   'rmdir' => {
+      alias => "R",
+      type => "=s",
+      help => qq! Deletes a directory. Fails if directory is not empty!,
+      required => 0,
+   },
+   'dir' => {
+      alias => "D",
+      type => "=s",
+      help => qq! List the contents of a datastore or host directory!,
+      required => 0,
+   },
+   'put' => {
+      alias => "p",
+      type => "=s",
+      help => qq! Uploads a local file to the directory on the host!,
+      required => 0,
+   },
+   'get' => {
+      alias => "g",
+      type => "=s",
+      help => qq! Downloads a file on the host to a local path!,
+      required => 0,
+   },
+   'dc' => {
+      alias => "Z",
+      type => "=s",
+      help => qq! The datacenter context. Not required in single-host operations!,
+      required => 0,
+   },
+   'listdc' => {
+      alias => "C",
+      type => "",
+      help => qq! List the paths to all datacenters available in the server!,
+      required => 0,
+   },
+   'listds' => {
+      alias => "S",
+      type => "",
+      help => qq! List datastores available!,
+      required => 0,
+   },
+   '_default_' => {
+      type => "=s",
+      argval => "destination_path",
+      help => qq! The destination file path!,
+      required => 0,
+   },
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $HADC = 'ha-datacenter';
+my $move = Opts::get_option('move');
+my $copy = Opts::get_option('copy');
+my $mkdir = Opts::get_option('mkdir');
+my $rmdir = Opts::get_option('rmdir');
+my $dir = Opts::get_option('dir');
+my $listds = Opts::get_option('listds');
+my $listdc = Opts::get_option('listdc');
+my $put = Opts::get_option('put');
+my $get = Opts::get_option('get');
+my $rm = Opts::get_option('rm');
+my $force = Opts::get_option('force') || 0;
+my $target = Opts::get_option('_default_');
+my $datacenter = Opts::get_option('dc') || $HADC;
+
+my $vim = Util::connect();
+
+Opts::assert_usage(defined($dir) || defined($copy) || defined($move) || 
+                   defined($mkdir) || defined($rm) || defined($rmdir) || 
+                   defined($get) || defined($put) || 
+                   defined($listds) || defined($listdc),
+   "At least one of command argument must be supplied.");
+
+my $fm = undef;
+if (defined($move) || 
+    defined($rmdir) ||
+    defined($mkdir) ||
+    defined($rm) ||
+    defined($copy)) {
+    $fm = VIExt::get_file_manager();
+    VIExt::fail("Operation failed: unable to retrieve file manager.") unless $fm;
+}
+
+if (defined($move)) {
+   do_move($fm, $move, $target, $force);
+} elsif (defined($copy)) {
+   do_copy($fm, $copy, $target, $force);
+} elsif (defined($mkdir)) {
+   do_mkdir($fm, $mkdir);
+} elsif (defined($rmdir)) {
+   do_rmdir($fm, $rmdir, $force);
+} elsif (defined($rm)) {
+   do_rm($fm, $rm, 0);
+} elsif (defined($listds)) {
+   do_listds($datacenter);
+} elsif (defined($listdc)) {
+   do_listdc();
+} elsif (defined($dir)) {
+   do_dir($dir);
+} elsif (defined($put)) {
+   do_put($put, $target);
+} elsif (defined($get)) {
+   do_get($get, $target);
+}
+
+Util::disconnect();
+
+sub request_confirm {
+   my $msg = shift;
+   
+   print "$msg ";
+   my $input = scalar(<STDIN>);
+   chop($input);
+   if ($input =~ /\s*y\s*/i) {
+      return 1;
+   }
+   # bug 312256
+   print "Deletion of file has been aborted.\n";
+   die "\n";
+}
+
+sub do_mkdir {
+   my ($fm, $directory_to_create) = @_;
+   my ($mode, $dc, $ds, $filepath) = VIExt::parse_remote_path($directory_to_create);
+
+   # bug 375043
+   if ($ds eq "") {
+      VIExt::fail("Invalid datastore path: $directory_to_create.");
+      return;   
+   }
+
+   my $remote_path = "[$ds] $filepath";
+
+   if ($mode eq "host") {
+      VIExt::fail("Creating a directory /host is not supported.");
+      return;
+   } else {
+      eval { 
+         $fm->MakeDirectory(name => $remote_path);
+         # bug 301206
+         print "Created directory '$remote_path' successfully.\n";
+      };
+      if ($@) {
+         VIExt::fail("Unable to create directory " . $remote_path .
+                     ":\n" . ($@->fault_string) . "\n");
+      }
+   }
+}
+
+sub do_rm {
+   my ($fm, $remote_path_to_remove, $flag) = @_;
+   my ($mode, $dc, $ds, $filepath) = VIExt::parse_remote_path($remote_path_to_remove);
+   my $remote_path = "[$ds] $filepath";
+   # bug 266928
+   if((!$flag) && ($mode eq "folder" )){
+      # bug 312252
+      if(!$force) {
+           request_confirm("Remove '$filepath'? (y/n) :")
+       }
+   }
+
+   if ($mode eq "host") {
+      VIExt::fail("Deleting of paths in /host is not supported.");
+      return;
+   } else {
+      # bug 317741, 459048
+      if ($flag) {
+         check_dir($remote_path);
+      }
+
+      eval { 
+         $fm->DeleteDatastoreFile(name => $remote_path);
+         # bug 301206
+         print "Deleted file '$remote_path' successfully.\n";
+      };
+      if ($@) {
+         VIExt::fail("Unable to delete " . $remote_path . ":\n" . ($@->fault_string));
+      }
+   }
+}
+
+sub do_rmdir {
+   my ($fm, $rmdir, $force) = @_;
+   if ($force ||
+       request_confirm("Remove directory '$rmdir'? (y/n) :")) {
+       do_rm($fm, $rmdir, 1);
+   }
+}
+
+# bug 317741
+sub check_dir {
+   my ($path) = @_;
+   my ($mode, $dc, $ds, $filepath) = VIExt::parse_remote_path($path);
+   if ($mode eq "tmp") {
+      return;
+   }
+   my $resp = VIExt::http_get_file($mode, $filepath, $ds, $dc, undef);
+   if ($resp && $resp->is_success) {
+      my $content = $resp->content;
+      my $count = 0;
+      while($content =~ m/(<a href=\".*\">.*<\/a>)/g) {
+        $count = $count + 1;
+      }
+      if ($count > 1) {
+         VIExt::fail("Error: Cannot delete '$path' since it is not empty.");
+      }
+   } else {
+      VIExt::fail("Error: Cannot delete '$path'.");
+   }
+}
+
+
+sub do_move_or_copy {
+   my ($op, $fm, $source, $target, $force) = @_;
+
+   if ($op ne "copy" && $op ne "move") {
+      return;
+   }
+
+   if (!defined($source)) {
+      VIExt::fail("Error: source is not specified.");
+      return;
+   }
+   
+   my ($mode, $dc, $ds, $filepath) = VIExt::parse_remote_path($source);
+   my $source_path = "[$ds] $filepath";
+   if ($mode eq "host") {
+      VIExt::fail("Files in /host cannot be used in $op.");
+      return;
+   }
+   
+   # bug 463499
+   if (!defined($target)) {
+      VIExt::fail("Error: target is not specified.");
+      return;
+   }
+   
+   ($mode, $dc, $ds, $filepath) = VIExt::parse_remote_path($target);
+   my $target_path = "[$ds] $filepath";
+   if ($mode eq "host") {
+      VIExt::fail("Files in /host cannot be used in $op.");
+      return;
+   }
+
+   $dc = $HADC unless $dc;
+   my $dcRef = Vim::find_entity_view(view_type => 'Datacenter',
+      filter => {name => $dc});
+
+   eval { 
+      if ($op eq "copy") {
+         $fm->CopyDatastoreFile(sourceName => $source_path, 
+            sourceDatacenter => $dcRef, 
+            destinationName => $target_path,
+            force => $force);
+         # bug 301206
+         print "Copied file from $source to $target successfully.\n"
+      } else {
+         $fm->MoveDatastoreFile(sourceName => $source_path, 
+            sourceDatacenter => $dcRef, 
+            destinationName => $target_path,
+            force => $force);
+         # bug 301206
+         print "Moved file from $source to $target successfully.\n"
+      }
+   };
+   if ($@) {
+      VIExt::fail("Unable to $op " . $source . " to " .  $target . 
+                  ":\n" .  ($@->fault_string) . "\n");
+   }
+}
+
+sub do_move {
+   my ($fm, $source, $target, $force) = @_;
+   do_move_or_copy("move", $fm, $source, $target, $force);
+}
+
+sub do_copy {
+   my ($fm, $source, $target, $force) = @_;
+   do_move_or_copy("copy", $fm, $source, $target, $force);
+}
+
+sub print_dir {
+   my ($resp) = @_;
+   my $content = $resp->content;
+
+   my $first = 1;
+   while ($content =~ m/<a href=\"[^\"]+\">([^<]+)<\/a>/g) {
+      my $name = $1;
+      # The only two naturally occurring 'Parent' strings are
+      # Datacenter and Directory. The rest we assume is human.
+      if (!($first && $name =~ /^Parent (Datacenter|Directory)/)) {
+         if (!Encode::is_utf8($name)) {
+            $name = Encode::decode_utf8($name);
+         }
+         print $name . "\n";
+      }
+
+      $first = 0;
+   }
+}
+
+sub do_dir {
+   my ($path) = @_;
+
+   # bug 379384
+   if ($path =~ m@^\s*/tmp@) {
+      VIExt::fail("Listing of /tmp is not supported.");
+      return;
+   }
+   if (!($path =~ m@^\s*/host@  || $path =~ /\s*\[(.*)\]\s*(.*)$/ || $path =~ m@^\s*/folder/?(.*)\?(.*)@)) {
+      VIExt::fail("Invalid format : $path.");
+      return;
+   }
+
+   my ($mode, $dc, $ds, $filepath) = VIExt::parse_remote_path($path);
+
+   my $resp = VIExt::http_get_file($mode, $filepath, $ds, $dc, undef);
+   if ($resp && $resp->is_success) {
+      # bug 410114
+      print "\nContent Listing";
+      print "\n---------------\n\n";
+      print_dir($resp);
+   } else {
+      # bug 463503
+      VIExt::fail("Error: Can not list directory '$path'.");
+   }
+}
+
+sub do_listdc {
+   my $datacenters = Vim::find_entity_views(view_type => 'Datacenter');
+
+   foreach (@$datacenters) {
+      my $path = Util::get_inventory_path($_, $vim);
+      print $path . "\n";
+   }
+}
+
+sub do_listds {
+   my ($dc) = @_;
+
+   do_dir("/folder?dcPath=$dc");
+}
+
+
+sub do_put {
+   my ($local_source, $remote_target) = @_;
+   # bug 358530
+   if (! defined $remote_target) {
+      VIExt::fail("Error: Undefined remote target.");
+   }
+
+   # bug 322577
+   if (defined $local_source and -d $local_source) {
+      VIExt::fail("Error: File to be uploaded cannot be a folder.");
+   }
+
+   # bug 266936
+   unless (-e $local_source) {
+      VIExt::fail("Error: File $local_source does not exist.");
+   }
+
+   my ($mode, $dc, $ds, $filepath) = VIExt::parse_remote_path($remote_target);
+   my $resp = VIExt::http_put_file($mode, $local_source, $filepath, $ds, $dc);
+   # bug 301206
+   if ($resp && $resp->is_success) {
+      print "Uploaded file $local_source to $filepath successfully.\n";
+   } else {
+      VIExt::fail("Error: File $local_source can not be uploaded to $filepath.");
+   }
+}
+
+# bug 322577
+sub do_get {
+   my ($remote_source, $local_target) = @_;
+   # bug 358530   
+   if(!defined $local_target) {
+      VIExt::fail("Error: Undefined local target.");
+   }
+
+   my ($mode, $dc, $ds, $filepath) = VIExt::parse_remote_path($remote_source);
+   if (-d $local_target) {
+      my $local_filename = $filepath;
+      $local_filename =~ s@^.*/([^/]*)$@$1@;
+      $local_target .= "/" . $local_filename;
+   }
+   my $resp = VIExt::http_get_file($mode, $filepath, $ds, $dc, $local_target);
+   # bug 301206, 266936
+   if (defined $resp and $resp->is_success) {
+      print "Downloaded file to $local_target successfully.\n";
+   } else {
+      VIExt::fail("Error: File can not be downloaded to $local_target.");
+   }   
+}
+
+__END__
+
+=head1 NAME
+
+vifs - perform file system operations on remote hosts
+
+=head1 SYNOPSIS
+
+ vifs [<connection_options>]
+   [--copy <source> <target> |
+    --dir <remote_dir> |
+    --help |
+    --force |
+    --get <remote_path> <local_path> |
+    --listdc |
+    --listds [--dc <datacenter>] |
+    --mkdir <remote_dir> |
+    --move <source> <target> |
+    --put <local_path> <remote_path> |
+    --rm <remote_path> |
+    --rmdir <remote_dir> ]
+    
+
+=head1 DESCRIPTION
+
+The vifs command performs common operations such as copy, remove, get, and put 
+on files and directories. The command is supported against ESX/ESXi hosts but not 
+against vCenter Server systems. 
+
+B<Note>: While there are some similarities between vifs and DOS or Unix 
+file system management utilities, there are also many differences. 
+For example, vifs does not support wildcard characters or current directories and, 
+as a result, relative path names. Use vifs only as documented. 
+
+
+=head1 OPTIONS
+
+=over
+
+=item B<connection_options>
+
+Specifies the target server and authentication information if required. Run C<vifs --help>
+for a list of all connection options
+
+=item B<--copy | -c E<lt>sourceE<gt> E<lt>targetE<gt>>
+
+Copies a file in a datastore to another location in a datastore. 
+The <source> must be a remote source path, the <target> a remote target path or directory. 
+Use the C<--force> option to replace existing destination files. 
+
+=item B<--dir | -D E<lt>remote_dirE<gt>>
+
+Lists the contents of a datastore or host directory.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the command with no arguments or with C<--help> has the same effect.
+
+=item B<--force | -f>
+
+Overwrites the destination file. Use with C<--copy> and C<--move>.
+
+=item B<--get | -g E<lt>remote_pathE<gt> E<lt>local_pathE<gt>>
+
+Downloads a file from the ESX/ESXi host to the machine 
+on which you run the vCLI commands. This operation uses HTTP GET. 
+
+=item B<--listdc | -c>
+
+Lists the datacenter paths available on an ESX/ESXi system. 
+
+=item B<--listds | -S>
+
+Lists the datastore names on the ESX/ESXi system. When multiple datacenters 
+are available, you can use the C<--dc|-Z E<lt>datacenterE<gt>> argument to specify the name of the 
+datacenter from which you want to list the datastore. 
+
+=item B<--mkdir | -M E<lt>remote_dirE<gt>>
+
+Creates a directory in a datastore. This operation fails if 
+the parent directory of remote_dir does not exist.
+
+=item B<--move | -m E<lt>sourceE<gt> E<lt>targetE<gt>>
+
+Moves a file in a datastore to another location in a datastore. 
+The <source> must be a remote source path, the <target> a remote target path or directory. 
+The C<--force> option replaces existing destination files.
+
+=item B<--put | -p E<lt>local_pathE<gt> E<lt>remote_pathE<gt>>
+
+Uploads a file from the machine on which you run the vCLI commands
+to the ESX/ESXi host. This operation uses HTTP PUT.
+This command can replace existing host files but cannot create new files.
+
+=item B<--rm | -r E<lt>remote_pathE<gt>>
+
+Deletes a file or a directory.
+
+=item B<--rmdir | -r E<lt>remote_dirE<gt>>
+
+Deletes a datastore directory. This operation fails if the directory is not empty. 
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run vifs --help for a list of common options including connection options.
+
+Copy a file to another location:
+
+ vifs <connection_options> -c "[StorageName] VM/VM.vmx" "[StorageName] VM_backup/VM.vmx"
+
+List all the datastores:
+
+ vifs <connection_options> -S
+
+List all the directories:
+
+ vifs --server <connection_options> -D "[StorageName] vm"
+
+Upload a file to the remote datastore:
+
+ vifs <connection_options> -p "tmp/backup/VM.pl"
+    "[StorageName] VM/VM.txt" -Z "ha-datacenter"
+
+Delete a file:
+
+ vifs <connection_options> -r "[StorageName] VM/VM.txt" -Z "ha-datacenter"
+
+ vifs <connection_options> -rmdir "[StorageName] VM/VM.txt" -Z "ha-datacenter"
+
+List the paths to all datacenters available in the server:
+
+ vifs <connection_options> -C
+
+Download a file on the host to a local path:
+
+ vifs <connection_options> -g  "[StorageName] VM/VM.txt" 
+    -Z "ha-datacenter" "tmp/backup/VM.txt"
+
+Move a file to another location:
+
+ vifs <connection_options> -m  "[StorageName] VM/VM.vmx" 
+    "[StorageName] vm/vm_backup.vmx" -Z "ha-datacenter"
+
+Remove an existing directory:
+
+ vifs <connection_options> -R "[StorageName] VM/VM" -Z "ha-datacenter"
+
+ vifs <connection_options> --rm "[StorageName] VM/VM" -Z "ha-datacenter"
+
+=cut

@@ -1,0 +1,435 @@
+#!/usr/bin/perl -w
+
+#
+# Copyright 2009 VMware, Inc.  All rights reserved.
+#
+# VMware Authentication Configuration.
+#
+
+
+use strict;
+use warnings;
+
+
+use VMware::VIM25Runtime;
+use VMware::VILib;
+use VMware::VIExt;
+
+# XXX: Refactor with objects for different authentication schemes.
+ 
+my %labels = ( 
+	AD => {objectstring => "ActiveDirectory",
+		   displayname => "Active Directory",
+		   supportedoperations => ["joindomain", "currentdomain", "leavecurrentdomain" ]
+		  },
+	Local => {objectstring => "Local",
+			  displayname => "Local Authentication",
+			  supportedoperations => []
+		 	 },
+);
+
+sub issupported{
+	my $functionname = shift;
+	my $authscheme = shift;
+	my %labels = @_;
+	
+	if(defined($labels{$authscheme})){
+		foreach (@{$labels{$authscheme}->{supportedoperations}}){
+			if($functionname eq $_){
+				return 1;
+			}
+		}
+		VIExt::fail("Operation not supported by the authentication scheme.");
+		return 0;
+	}
+	else{
+		VIExt::fail("Unsupported authentication scheme.");
+		return 0;
+	}
+}
+
+my %opts = (
+	vihost => {
+		alias => "h",
+		type => "=s",
+		help => qq! The host to use when connecting via a vCenter Server.  !,
+		required => 0,
+	},
+	listauthstores => {
+		alias => "l",
+		type => "",
+		help => qq! Prints out the different authentication mechanisms supported. !,
+	},
+	getremoteauthstore => {
+		alias => "a",
+		type => "",
+		help => qq! Prints out only the active authentication mechanism. !
+	},
+	joindomain => {
+		alias => "j",
+		type => "=s",
+		help => qq! Join a particular Active Directory domain. !,
+	},
+	currentdomain => {
+		alias => "c",
+		type => "",
+		help => qq! Prints out the currently joined domain. !,
+	},
+	adusername => {
+		alias => "U",
+		type => "=s",
+		help => qq! Active Directory username. To be used in conjunction with joindomain option. !,
+	},
+	adpassword => {
+		alias => "w",
+		type => "=s",
+		help => qq! Active Directory password. To be used in conjunction with joindomain option. !,
+	},
+	leavecurrentdomain => {
+		alias => "L",
+		type => "",
+		help => qq! Leaves the current Active Directory domain. !,
+	},
+	force => {
+		alias => "f",
+		type => "",
+		help => qq! This flag is only used with leavecurrentdomain option. If specified, any \
+		permissions on entities for AD users will be deleted. If not specified and such \
+		permissions exist, the operation will fail. !,
+	},
+	authscheme => {
+		alias => "t",
+		type => "=s",
+		help => qq! Specify the type of authenticaton scheme. Currently only AD is supported. !,
+	}
+);
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $listauthstores = Opts::get_option('listauthstores');
+my $getremoteauthstores = Opts::get_option('getremoteauthstore');
+my $joindomain = Opts::get_option('joindomain');
+my $currentdomain = Opts::get_option('currentdomain');
+my $adusername = Opts::get_option('adusername');
+my $adpassword = Opts::get_option('adpassword');
+my $leavecurrentdomain = Opts::get_option('leavecurrentdomain');
+my $authscheme = Opts::get_option('authscheme');
+my $force = Opts::get_option('force');
+
+Opts::assert_usage(
+	defined($listauthstores) ||
+	defined($getremoteauthstores) ||
+	(
+		(
+			defined($joindomain) ||
+			defined($leavecurrentdomain) ||
+			defined($currentdomain)
+		)  && defined($authscheme)
+	),
+	"At least one of command argument must be supplied."
+);
+
+Util::connect();
+
+
+my $authmgr = Vim::get_view(mo_ref => ManagedObjectReference->new(type => "HostAuthenticationManager",
+									value => "ha-auth-manager"));
+unless (defined($authmgr)){
+	Util::disconnect();
+	 VIExt::fail("Operation not supported on this host.");
+}
+
+my @supportedstores;
+
+# Get the list of supported stores.
+eval{
+	@supportedstores = @{$authmgr->supportedStore()};
+};
+if($@){
+	VIExt::fail("Could not get the list of supported stores: " . ($@->fault_string));
+}
+
+if(defined($listauthstores) || defined($getremoteauthstores)){ 
+
+	my %supportedschemes;
+
+	foreach my $authenticationstore (@supportedstores){
+		my $authenticationstore_mo;
+		my $authenticationstoreinfo;
+		eval{
+			$authenticationstore_mo = Vim::get_view(mo_ref => $authenticationstore);
+		};
+		if($@){
+			VIExt::fail("Could not get authentication store info" . ($@->fault_string));	
+		}
+		else{
+			$authenticationstoreinfo = $authenticationstore_mo->info();
+			if($authenticationstoreinfo->{enabled}){
+				foreach (keys(%labels)){
+					if(ref($authenticationstoreinfo)=~m/$labels{$_}->{objectstring}/i){
+						$supportedschemes{$labels{$_}->{displayname}}=1;
+						last;
+					}
+				}
+			}
+			else{
+				foreach(keys(%labels)){
+					if(ref($authenticationstoreinfo)=~m/$labels{$_}->{objectstring}/i){
+						$supportedschemes{$labels{$_}->{displayname}}=0;
+						last;
+					}
+				}
+			}
+		}
+	}
+	
+	if(defined($listauthstores)){
+		print "Supported authentication schemes:\n";
+		print "=================================== \n";
+	}
+	else{
+		print "Currently active authentication schemes:\n";
+		print "===========================================\n";
+	}
+	
+	foreach (sort(keys %supportedschemes)){
+		if(defined($getremoteauthstores)){
+			if($supportedschemes{$_}){
+				print $_ . "\n";
+			}
+		}
+		else{
+			print $_ . "\n";
+		}
+	}	
+}
+else{
+	
+# Get the particular AuthenticationStore and AuthenticationStoreInfo.
+	my $authenticationstore;
+	my $authenticationstore_mo;
+	my $authenticationstoreinfo;
+	my $notenabled=1;
+	if(defined($labels{$authscheme})){
+		foreach $authenticationstore (@supportedstores){
+			eval{
+				$authenticationstore_mo = Vim::get_view(mo_ref => $authenticationstore);
+			};
+			if($@){
+				VIExt::fail("Could not get authentication store info" . ($@->fault_string));	
+			}
+			else{
+				$authenticationstoreinfo = $authenticationstore_mo->info();
+				if(ref($authenticationstoreinfo) =~ m/$labels{$authscheme}->{objectstring}/i){
+					#We have the correct instances.
+					$notenabled=0;
+					last;
+				}
+			}
+		}
+		if($notenabled){
+			VIExt::fail("$authscheme is either not supported or not enabled on the system.");
+		}
+	}
+	else{
+		VIExt::fail("$authscheme is not a supported authentication scheme.");
+	}
+	
+# We have the necessary AuthenticationStore and the AuthenticationStoreInfo, let the fun begin.
+	if(defined($leavecurrentdomain)){
+		issupported("leavecurrentdomain", $authscheme, %labels);
+		my $flushpermissions = 0;
+		if(defined($force)){
+			$flushpermissions = 1;
+		}
+		eval{
+			$authenticationstore_mo->LeaveCurrentDomain(force => $flushpermissions);
+		};
+		if($@){
+				VIExt::fail("Could not part with the current domain: " . ($@->fault_string));	
+		}
+		else{
+			print "Successfully parted with the current domain.\n";
+		}		
+	}
+	elsif(defined($joindomain)){
+		issupported("joindomain", $authscheme, %labels);
+
+		#XXX : Why is this unset. Seems like a bug to me in the VIPerlToolkit.
+
+		unless (defined($/)){
+			$/="\n";
+		}
+
+		unless(defined($adusername)){
+			print "Enter AD username: ";
+			chomp($adusername = <STDIN>);
+		}
+		
+		unless(defined($adpassword)){
+			print "Enter AD password: ";
+			if ( $^O eq "MSWin32" ) {
+			       require Term::ReadKey;
+			       Term::ReadKey->import(qw(ReadMode));
+			       Term::ReadKey->import(qw(ReadLine));
+			       ReadMode('noecho');
+			       chomp($adpassword = ReadLine(0));
+			       ReadMode('normal');
+		   	}
+		    	else {
+		       		system("stty -echo") and die "ERROR: stty failed\n";
+		       		chomp ($adpassword = <STDIN>);
+		       		system("stty echo") and die "ERROR: stty failed\n";
+		    	}
+            		print "\n";
+		}
+		
+		eval{
+			$authenticationstore_mo->JoinDomain(domainName => $joindomain,
+											 userName => $adusername,
+											 password => $adpassword);
+		};
+		if($@){
+			VIExt::fail("Could not join $joindomain: " . ($@->fault_string));
+		}
+		else{
+			print "Successfully joined $joindomain\n";
+		}
+	}
+	elsif(defined($currentdomain)){
+		issupported("currentdomain", $authscheme, %labels);
+		if(defined($authenticationstoreinfo->{joinedDomain})){
+			print "Current Domain: " . $authenticationstoreinfo->{joinedDomain} . "\n";
+		}
+		else{
+			print "Currently not joined to any domain.\n";
+		}
+	}
+}
+
+Util::disconnect();
+
+__END__
+
+=pod
+
+=head1 NAME
+
+vicfg-authconfig - manage Active Directory authentication schemes.
+
+=head1 SYNOPSIS
+
+	vicfg-authconfig 
+           <conn_options>
+          [--adpassword |
+	   --adusername |
+           --authscheme |
+           --currentdomain |
+           --force |
+           --getremoteauthstore |
+           --help |
+           --leavecurrentdomain |
+           --listauthstores 
+           --vihost]
+           
+
+=head1 DESCRIPTION
+
+List information about Active Directory domains for a host, 
+join an Active Directory domain, or leave the current domain. 
+ 
+
+=head1 OPTIONS
+
+=over
+
+=item B<--adpassword | -w E<lt>passwordE<gt>>
+
+Password with which to log into the domain controller. Use this option with the C<--joindomain> option.
+If you do not specify an AD password at the command line, the system prompts you. 
+
+=item B<--adusername | -U E<lt>nameE<gt>>
+
+User name with which to log in to the domain controller. Use this option with the C<--joindomain> option.
+If you do not specify an AD user at the command line, the system prompts you. 
+
+=item B<--authscheme | -t AD>
+
+The authentication scheme to be configured. Currently the only supported argument is C<AD>.
+
+=item B<conn_options>
+
+Specifies the target server and authentication information if required. Run C<vicfg-authconfig --help>
+for a list of all connection options.
+
+=item B<--currentdomain | -c>
+
+Displays the currently joined domain. Use this option in conjunction with the C<--authscheme> option.
+This option takes no arguments.
+
+=item B<--force | -f>
+
+Use this option with the C<--leavecurrentdomain> option to delete any AD user permissions on entities. 
+If you run C<vicfig-authcfg --leavecurrentdomain>, AD user permissions are present, and you do not use C<--force>, 
+the operation fails. 
+
+=item B<--getremoteauthstore | -a>
+
+Prints the active authentication mechanisms. This option takes no arguments.
+
+=item B<--help>
+
+Prints a help message for each command-specific and each connection option. 
+Calling the command with no arguments or with C<--help> has the same effect.
+
+=item B<--joindomain | -j E<lt>domain_FQDNE<gt>>
+
+Joins the specified Active Directory domain. Use this option with the C<--authscheme> option. 
+This option takes in the FQDN of the directory server as the argument.
+
+=item B<--leavecurrentdomain | -L>
+
+Leaves the currently joined domain. Use this option with the C<--authscheme> option. If AD user permissions 
+on entities exist, the operation fails unless you specify C<--force>. This option takes no arguments.
+
+=item B<--listauthstores | -l>
+
+Prints the supported authentication mechanisms. This option takes no arguments.
+
+=item B<--vihost | -h E<lt>esx_hostE<gt>>
+
+When you execute a vSphere CLI with the C<--server> option pointing 
+to a vCenter Server system, use C<--vihost> to specify the ESX/ESXi host to run the command against.
+
+=back
+
+=head1 EXAMPLES
+
+The following examples assume you are specifying connection options, either 
+explicitly or, for example, by specifying the server, user name, and password. 
+Run C<vicfg-authconfig --help> for a list of common options including connection options. 
+
+
+List the supported authentication schemes:
+
+ vicfg-authconfig <conn_options> --listauthstores
+
+Get the currently set authentication schemes:
+
+ vicfg-authconfig <conn_options> --getremoteauthstore
+
+Join the specified AD Domain:
+
+ vicfg-authconfig <conn_options> <ad_conn_options> --authscheme AD --joindomain <domain_FQDN>
+
+Leave the current AD Domain:
+
+ vicfg-authconfig <conn_options> --authscheme AD --leavecurrentdomain [--force]
+
+Display the current AD Domain:
+
+ vicfg-authconfig <conn_options> --authscheme AD --currentdomain
+
+=cut

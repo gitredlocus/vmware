@@ -1,0 +1,82 @@
+10
+
+dir
+189734
+http://llvm.org/svn/llvm-project/llvm/trunk/test/CodeGen
+http://llvm.org/svn/llvm-project
+
+
+
+2013-09-01T14:24:41.027302Z
+189729
+delena
+has-props
+
+
+
+
+
+
+
+
+
+
+
+
+
+91177308-0d34-0410-b5e6-96231b3b80d8
+
+SI
+dir
+
+Generic
+dir
+
+SystemZ
+dir
+
+Thumb
+dir
+
+PowerPC
+dir
+
+NVPTX
+dir
+
+ARM
+dir
+
+XCore
+dir
+
+Inputs
+dir
+
+CPP
+dir
+
+X86
+dir
+
+MSP430
+dir
+
+R600
+dir
+
+AArch64
+dir
+
+Hexagon
+dir
+
+Thumb2
+dir
+
+Mips
+dir
+
+SPARC
+dir
+

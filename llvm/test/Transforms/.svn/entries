@@ -1,0 +1,205 @@
+10
+
+dir
+189734
+http://llvm.org/svn/llvm-project/llvm/trunk/test/Transforms
+http://llvm.org/svn/llvm-project
+
+
+
+2013-08-31T18:19:35.387991Z
+189724
+d0k
+has-props
+
+
+
+
+
+
+
+
+
+
+
+
+
+91177308-0d34-0410-b5e6-96231b3b80d8
+
+DebugIR
+dir
+
+BlockPlacement
+dir
+
+LICM
+dir
+
+Internalize
+dir
+
+LowerExpectIntrinsic
+dir
+
+LoopSimplify
+dir
+
+ScalarRepl
+dir
+
+GVN
+dir
+
+PhaseOrdering
+dir
+
+ADCE
+dir
+
+TailCallElim
+dir
+
+LoopDeletion
+dir
+
+LoopUnswitch
+dir
+
+DeadArgElim
+dir
+
+Mem2Reg
+dir
+
+Reg2Mem
+dir
+
+IndVarSimplify
+dir
+
+BranchFolding
+dir
+
+MetaRenamer
+dir
+
+JumpThreading
+dir
+
+Reassociate
+dir
+
+TailDup
+dir
+
+FunctionAttrs
+dir
+
+LowerInvoke
+dir
+
+LCSSA
+dir
+
+LoopUnroll
+dir
+
+CodeExtractor
+dir
+
+PruneEH
+dir
+
+GCOVProfiling
+dir
+
+InstCombine
+dir
+
+MergeFunc
+dir
+
+GlobalDCE
+dir
+
+SimplifyCFG
+dir
+
+LoopStrengthReduce
+dir
+
+IPConstantProp
+dir
+
+GlobalOpt
+dir
+
+CodeGenPrepare
+dir
+
+StructurizeCFG
+dir
+
+CorrelatedValuePropagation
+dir
+
+LowerAtomic
+dir
+
+ConstProp
+dir
+
+LoopRotate
+dir
+
+SCCP
+dir
+
+ArgumentPromotion
+dir
+
+InstSimplify
+dir
+
+LoopIdiom
+dir
+
+DeadStoreElimination
+dir
+
+ObjCARC
+dir
+
+LoopVectorize
+dir
+
+SROA
+dir
+
+Sink
+dir
+
+EarlyCSE
+dir
+
+ConstantMerge
+dir
+
+LowerSwitch
+dir
+
+StripSymbols
+dir
+
+SLPVectorizer
+dir
+
+MemCpyOpt
+dir
+
+Inline
+dir
+
+BBVectorize
+dir
+

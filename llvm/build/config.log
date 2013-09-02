@@ -444,7 +444,7 @@ configure:8090: test -s conftest
 configure:8093: $? = 0
 configure:8114: result: yes
 configure:8125: checking for compiler -Wl,--version-script option
-configure:8181: gcc -o conftest  -Wl,--version-script=/tmp/fooM8EuVR/export.map   conftest.c  >&5
+configure:8181: gcc -o conftest  -Wl,--version-script=/tmp/foogrGery/export.map   conftest.c  >&5
 configure:8187: $? = 0
 configure:8194: test -z "$ac_c_werror_flag" || test ! -s conftest.err
 configure:8197: $? = 0
@@ -509,7 +509,7 @@ configure:9740: checking whether libtool supports -dlopen/-dlpreopen
 configure:9752: result: yes
 configure:9771: checking for shl_load
 configure:9827: gcc -o conftest    conftest.c  >&5
-/tmp/cc0kTewW.o: In function `main':
+/tmp/ccOB3jc4.o: In function `main':
 conftest.c:(.text+0xa): undefined reference to `shl_load'
 collect2: ld returned 1 exit status
 configure:9833: $? = 1
@@ -1008,7 +1008,7 @@ configure:11899: $? = 0
 configure:11913: result: yes
 configure:12089: checking for library containing dlopen
 configure:12130: gcc -o conftest    conftest.c -lm  >&5
-/tmp/ccVIjH0Y.o: In function `main':
+/tmp/ccX3YdmI.o: In function `main':
 conftest.c:(.text+0xa): undefined reference to `dlopen'
 collect2: ld returned 1 exit status
 configure:12136: $? = 1
@@ -1101,7 +1101,7 @@ configure:12156: $? = 0
 configure:12180: result: -ldl
 configure:12196: checking for library containing clock_gettime
 configure:12237: gcc -o conftest    conftest.c -ldl -lm  >&5
-/tmp/ccgZWTbi.o: In function `main':
+/tmp/cc2kOJrR.o: In function `main':
 conftest.c:(.text+0xa): undefined reference to `clock_gettime'
 collect2: ld returned 1 exit status
 configure:12243: $? = 1
@@ -1195,7 +1195,7 @@ configure:12263: $? = 0
 configure:12287: result: -lrt
 configure:12297: checking for library containing setupterm
 configure:12338: gcc -o conftest    conftest.c -lrt -ldl -lm  >&5
-/tmp/cc2gR2lo.o: In function `main':
+/tmp/cc7Zsaio.o: In function `main':
 conftest.c:(.text+0xa): undefined reference to `setupterm'
 collect2: ld returned 1 exit status
 configure:12344: $? = 1
@@ -3218,7 +3218,7 @@ configure:16892: checking for CrashReporterClient.h
 configure:16900: result: no
 configure:16914: checking __crashreporter_info__
 configure:16938: gcc -o conftest    conftest.c -lz -lpthread -lrt -ldl -lm  >&5
-/tmp/cckoHsuo.o: In function `main':
+/tmp/ccaIhJaB.o: In function `main':
 conftest.c:(.text+0x7): undefined reference to `__crashreporter_info__'
 collect2: ld returned 1 exit status
 configure:16944: $? = 1
@@ -3654,7 +3654,7 @@ configure:18336: $? = 0
 configure:18350: result: yes
 configure:18254: checking for arc4random
 configure:18310: gcc -o conftest    conftest.c -lz -lpthread -lrt -ldl -lm  >&5
-/tmp/ccQ1yWxX.o: In function `main':
+/tmp/ccV0vQlw.o: In function `main':
 conftest.c:(.text+0xa): undefined reference to `arc4random'
 collect2: ld returned 1 exit status
 configure:18316: $? = 1
@@ -3863,7 +3863,7 @@ configure:18449: $? = 0
 configure:18463: result: yes
 configure:18367: checking for malloc_zone_statistics
 configure:18423: gcc -o conftest    conftest.c -lz -lpthread -lrt -ldl -lm  >&5
-/tmp/ccX4tkdK.o: In function `main':
+/tmp/cchdA9mo.o: In function `main':
 conftest.c:(.text+0xa): undefined reference to `malloc_zone_statistics'
 collect2: ld returned 1 exit status
 configure:18429: $? = 1
@@ -4067,7 +4067,7 @@ configure:18563: $? = 0
 configure:18577: result: yes
 configure:18481: checking for sigsetjmp
 configure:18537: gcc -o conftest    conftest.c -lz -lpthread -lrt -ldl -lm  >&5
-/tmp/ccTCZ5ol.o: In function `main':
+/tmp/ccAl3h55.o: In function `main':
 conftest.c:(.text+0xa): undefined reference to `sigsetjmp'
 collect2: ld returned 1 exit status
 configure:18543: $? = 1
@@ -4822,7 +4822,7 @@ config.status:1177: executing utils/Makefile commands
 config.status:1177: executing projects/Makefile commands
 config.status:1177: executing bindings/Makefile commands
 config.status:1177: executing bindings/ocaml/Makefile.ocaml commands
-configure:23731: === configuring in projects/sample (/home/bmehta/redlocus/gears/tools/C/clang/llvm/build/projects/sample)
+configure:23731: === configuring in projects/sample (/home/bmehta/redlocus/llvm/build/projects/sample)
 configure:23834: running /bin/bash ../../../projects/sample/configure --prefix=/usr/local  '--enable-optimized' '--disable-assertions' 'CC=gcc' 'CXX=g++' --cache-file=/dev/null --srcdir=../../../projects/sample
 
 ## ---------------- ##
@@ -5081,7 +5081,7 @@ COVERED_SWITCH_DEFAULT=''
 CP='/bin/cp'
 CPP='gcc -E'
 CPPFLAGS=''
-CVSBUILD='CVSBUILD=1'
+CVSBUILD=''
 CXX='g++'
 CXXCPP='g++ -E'
 CXXFLAGS=''
@@ -5151,7 +5151,7 @@ LIBXML2_INC=''
 LIBXML2_LIBS=''
 LINKALL='-Wl,--whole-archive'
 LLVM_BINDIR='/usr/local/bin'
-LLVM_CONFIGTIME='Sun Sep  1 23:42:00 PDT 2013'
+LLVM_CONFIGTIME='Mon Sep  2 11:16:00 PDT 2013'
 LLVM_COPYRIGHT='Copyright (c) 2003-2013 University of Illinois at Urbana-Champaign.'
 LLVM_CROSS_COMPILING='0'
 LLVM_DATADIR='/usr/local/share/llvm'
@@ -5434,7 +5434,7 @@ target_vendor='unknown'
 #define LLVM_INCLUDEDIR "/usr/local/include"
 #define LLVM_INFODIR "/usr/local/info"
 #define LLVM_MANDIR "/usr/local/man"
-#define LLVM_CONFIGTIME "Sun Sep  1 23:42:00 PDT 2013"
+#define LLVM_CONFIGTIME "Mon Sep  2 11:16:00 PDT 2013"
 #define LLVM_HOST_TRIPLE "x86_64-unknown-linux-gnu"
 #define LLVM_DEFAULT_TARGET_TRIPLE "x86_64-unknown-linux-gnu"
 

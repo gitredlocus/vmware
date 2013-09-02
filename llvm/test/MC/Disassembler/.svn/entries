@@ -1,46 +1,0 @@
-10
-
-dir
-189734
-http://llvm.org/svn/llvm-project/llvm/trunk/test/MC/Disassembler
-http://llvm.org/svn/llvm-project
-
-
-
-2013-08-30T21:19:48.807097Z
-189698
-rmitton
-has-props
-
-
-
-
-
-
-
-
-
-
-
-
-
-91177308-0d34-0410-b5e6-96231b3b80d8
-
-X86
-dir
-
-AArch64
-dir
-
-Mips
-dir
-
-SystemZ
-dir
-
-ARM
-dir
-
-XCore
-dir
-

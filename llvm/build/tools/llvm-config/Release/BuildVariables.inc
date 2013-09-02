@@ -16,8 +16,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define LLVM_SRC_ROOT "/home/bmehta/redlocus/gears/tools/C/clang/llvm"
-#define LLVM_OBJ_ROOT "/home/bmehta/redlocus/gears/tools/C/clang/llvm/build"
+#define LLVM_SRC_ROOT "/home/bmehta/redlocus/llvm"
+#define LLVM_OBJ_ROOT "/home/bmehta/redlocus/llvm/build"
 #define LLVM_CPPFLAGS " -DNDEBUG -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS"
 #define LLVM_CFLAGS " -DNDEBUG -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -O3 -fomit-frame-pointer -fPIC"
 #define LLVM_LDFLAGS ""
